@@ -183,7 +183,8 @@
     btn.addEventListener('click', () => setOpen(!header.classList.contains('menu-open')));
     nav.addEventListener('click', (e) => { if (e.target.closest('a')) setOpen(false); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
-    document.addEventListener('click', (e) => { if (!header.contains(e.target)) setOpen(false); });
+    // a tap outside the menu, including on the dimmed page (the header's backdrop layer), closes it
+    document.addEventListener('click', (e) => { if (!header.contains(e.target) || e.target === header) setOpen(false); });
     matchMedia('(min-width: 821px)').addEventListener('change', (e) => { if (e.matches) setOpen(false); });
   }
 
