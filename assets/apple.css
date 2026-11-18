@@ -170,23 +170,59 @@ body.theme-white::before {
   header nav[aria-label="Main"] { display: none !important; }
   header button[aria-label="Search"], header button[aria-label="Wishlist"] { display: none !important; }
   .menu-toggle { display: inline-flex; }
-  header .menu-sheet {
-    background: #FFFFFF;
-    -webkit-backdrop-filter: saturate(180%) blur(30px);
-    backdrop-filter: saturate(180%) blur(30px);
-    border-bottom: 1px solid rgba(0, 0, 0, .08);
-    box-shadow: 0 24px 48px rgba(0, 0, 0, .12);
-  }
   header > div > a:first-child span:last-child span:first-child { white-space: nowrap; }
-  header.menu-open nav[aria-label="Main"] {
+
+  /* the bar's frosted glass lives on a layer behind it, so the menu card can blur the page itself */
+  header.glass-bar-light { background: transparent !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; border-bottom: none !important; }
+  header.glass-bar-light::before {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    background: rgba(255, 255, 255, .74);
+    -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid rgba(0, 0, 0, .08);
+  }
+  /* soft dim over the page while the menu is open */
+  header.glass-bar-light::after {
+    content: ""; position: fixed; inset: 0; z-index: -2;
+    background: rgba(20, 6, 10, .18); opacity: 0; pointer-events: none;
+    transition: opacity .35s ease;
+  }
+  header.glass-bar-light.menu-open::after { opacity: 1; pointer-events: auto; }
+
+  /* the menu: a floating, rounded glass card that drops in and out */
+  header nav[aria-label="Main"].menu-sheet {
     display: flex !important; flex-direction: column !important; gap: 0 !important;
-    position: absolute; left: 0; right: 0; top: 100%;
-    padding: 8px 16px 16px; font-size: 22px !important; font-weight: 600;
+    position: absolute; left: 12px; right: 12px; top: calc(100% + 10px);
+    padding: 6px 20px !important; border-radius: 26px;
+    font-size: 21px !important; font-weight: 600;
+    background: rgba(255, 255, 255, .66);
+    -webkit-backdrop-filter: saturate(190%) blur(28px); backdrop-filter: saturate(190%) blur(28px);
+    border: 1px solid rgba(255, 255, 255, .7);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8), 0 0 0 .5px rgba(0, 0, 0, .06), 0 24px 60px rgba(40, 12, 20, .20);
+    transform-origin: 92% 0;
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transform: translateY(-14px) scale(.96);
+    transition: opacity .22s ease, transform .3s cubic-bezier(.4, 0, .6, 1), visibility 0s linear .3s;
   }
-  header.menu-open nav[aria-label="Main"] a {
-    padding: 14px 4px !important; border-bottom: 1px solid rgba(0, 0, 0, .08) !important; color: #1D1D1F !important;
+  header.menu-open nav[aria-label="Main"].menu-sheet {
+    opacity: 1; visibility: visible; pointer-events: auto; transform: none;
+    transition: opacity .28s ease, transform .5s cubic-bezier(.2, .9, .25, 1.12), visibility 0s;
   }
-  header.menu-open nav[aria-label="Main"] a:last-child { border-bottom: none !important; }
+  header nav[aria-label="Main"].menu-sheet a {
+    padding: 14px 2px !important; color: #1D1D1F !important; white-space: nowrap;
+    border-bottom: 1px solid rgba(0, 0, 0, .07) !important;
+    opacity: 0; transform: translateY(-6px);
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  header nav[aria-label="Main"].menu-sheet a:last-child { border-bottom: none !important; }
+  header.menu-open nav[aria-label="Main"].menu-sheet a { opacity: 1; transform: none; transition: opacity .35s ease, transform .45s cubic-bezier(.2, .9, .25, 1); }
+  header.menu-open nav.menu-sheet a:nth-child(1) { transition-delay: 60ms; }
+  header.menu-open nav.menu-sheet a:nth-child(2) { transition-delay: 95ms; }
+  header.menu-open nav.menu-sheet a:nth-child(3) { transition-delay: 130ms; }
+  header.menu-open nav.menu-sheet a:nth-child(4) { transition-delay: 165ms; }
+  header.menu-open nav.menu-sheet a:nth-child(5) { transition-delay: 200ms; }
+  header.menu-open nav.menu-sheet a:nth-child(6) { transition-delay: 235ms; }
+  header.menu-open nav.menu-sheet a:nth-child(7) { transition-delay: 270ms; }
+  header nav.menu-sheet a:active { color: #6E1A2C !important; }
 }
 .menu-toggle {
   width: 44px; height: 44px; align-items: center; justify-content: center;
@@ -252,7 +288,6 @@ html.motion a.glass-light, html.motion .dh-hover { transition: transform .35s va
 html.motion a.glass-light:hover, html.motion .dh-hover:hover { transform: translateY(-3px); box-shadow: 0 16px 40px rgba(40, 12, 20, .10); }
 .glass-bar-light, .glass-bar { transition: box-shadow .3s var(--ease), background-color .3s var(--ease); }
 .glass-bar-light.scrolled { box-shadow: 0 1px 0 rgba(0, 0, 0, .04), 0 10px 30px rgba(0, 0, 0, .06); }
-html.motion header .menu-sheet { animation: dh-sheet .32s cubic-bezier(.2, .7, .2, 1); }
 @keyframes dh-sheet { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 html.motion .dh-toast { animation: dh-toast .35s cubic-bezier(.2, .7, .2, 1); }
 @keyframes dh-toast { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
@@ -334,4 +369,11 @@ button[data-wish][aria-pressed="true"] { transform: none; }
 }
 @media (max-width: 420px) {
   [data-account] .glass-light { padding: 20px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  header nav.menu-sheet, header nav.menu-sheet a, header.glass-bar-light::after { transition: none !important; }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  header nav[aria-label="Main"].menu-sheet { background: #FFFFFF; }
 }
