@@ -1,7 +1,9 @@
 # Dream Hair by Loveth
 
 Website for **House of Loveth — Dream Hair by Loveth**, built from the design mockups.
-It's a static site (plain HTML, no build step) hosted on Vercel.
+It's a static site (plain HTML, no build step) hosted on Vercel. The look follows
+Apple's Human Interface Guidelines: system (San Francisco) type, sentence case and
+glass materials, shared in `assets/apple.css`.
 
 ## Pages
 
