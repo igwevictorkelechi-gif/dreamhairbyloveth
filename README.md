@@ -88,6 +88,44 @@ a `cp_live_` one and pressing **Refresh account details**.
 
 Server code lives in `supabase/functions/` (`cheqpay-webhook`, `cheqpay-connect`).
 
+## Order alerts (email + WhatsApp)
+
+| When | You (the store) | The customer |
+| --- | --- | --- |
+| Order placed | Email + WhatsApp | Email (with CheqPay payment details) + WhatsApp |
+| Payment confirmed | Email + WhatsApp | Email + WhatsApp |
+| Marked shipped in admin | — | Email + WhatsApp |
+
+How it works: a database trigger on `orders` writes one row per alert into
+`notifications` and wakes the `order-alerts` edge function, which sends each
+alert once and records the result. Failed sends retry (2, 4, 8… minutes, up to
+5 tries) via a 5-minute `pg_cron` job. Admin → Dashboard → **Order alerts** sets
+your email and WhatsApp number, can switch customer messages off, sends a test,
+and shows the latest alerts with the reason any weren't sent.
+
+### Connect the services
+
+Add these in Supabase → Edge Functions → Secrets:
+
+| Secret | What it is |
+| --- | --- |
+| `RESEND_API_KEY` | From resend.com → API keys. Sends all email. |
+| `ALERT_FROM_EMAIL` | e.g. `Dream Hair by Loveth <orders@houseoflovethhair.com>`. Verify the domain in Resend first. Until then the default `onboarding@resend.dev` sender only delivers to your own Resend account address, so customer emails will fail. |
+| `CALLMEBOT_APIKEY` | Your WhatsApp alerts. Save +34 644 59 71 67 (CallMeBot) in your phone, send it "I allow callmebot to send me messages", and it replies with your key. Put the same number in the admin card. |
+| `WHATSAPP_TOKEN` | Customer WhatsApp: a permanent access token from your Meta app (WhatsApp → API setup). |
+| `WHATSAPP_PHONE_NUMBER_ID` | The phone number ID shown on the same Meta page. |
+
+### WhatsApp templates for customers (create in Meta → WhatsApp Manager → Message templates)
+
+Category **Utility**, language **English (en)**. The names must match exactly.
+
+- `dh_order_received`: *Hi {{1}}, we've received your order {{2}} for {{3}}. See your order and payment details here: {{4}}*
+- `dh_payment_received`: *Hi {{1}}, we've received your payment of {{2}} for order {{3}}. We're preparing it now. Thank you for shopping with Dream Hair by Loveth.*
+- `dh_order_shipped`: *Hi {{1}}, your order {{2}} is on its way. Reply to this message if you have any questions.*
+
+Different names or language? Set `WA_TEMPLATE_PLACED`, `WA_TEMPLATE_PAID`,
+`WA_TEMPLATE_SHIPPED` or `WHATSAPP_TEMPLATE_LANG` as secrets.
+
 ## Motion
 
 Sections, cards and containers rise into place as they scroll into view, the

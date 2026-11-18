@@ -993,6 +993,7 @@
     while (kpiGrid && kpiGrid.parentElement && getComputedStyle(kpiGrid.parentElement).display !== 'grid') kpiGrid = kpiGrid.parentElement;
     if (kpiGrid && kpiGrid.parentElement) kpiGrid.parentElement.style.gridTemplateColumns = 'repeat(auto-fit, minmax(200px, 1fr))';
     await renderPaymentsCard();
+    await renderAlertsCard();
 
     // revenue chart: one bar per day, last 30 days
     const revH = $$('h2').find((h) => text(h) === 'Revenue');
@@ -1127,6 +1128,77 @@
     };
     const { data } = await db.functions.invoke('cheqpay-connect', { body: { action: 'status' } });
     await render(data, data ? null : 'Couldn’t reach the payments service.');
+  }
+
+  async function renderAlertsCard() {
+    const pay = $('#payments-title');
+    const ref = pay && pay.closest('section');
+    if (!ref) return;
+    const card = document.createElement('section');
+    card.className = 'glass-light';
+    card.setAttribute('style', ref.getAttribute('style') || '');
+    card.setAttribute('aria-labelledby', 'alerts-title');
+    ref.insertAdjacentElement('afterend', card);
+    const field = 'width:100%;box-sizing:border-box;min-height:44px;padding:0 14px;border-radius:12px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;font:inherit;font-size:15px;color:#1D1D1F';
+    const btn = (primary) => `min-height:44px;padding:0 20px;border-radius:980px;font:inherit;font-weight:600;cursor:pointer;${primary ? 'border:none;background:#6E1A2C;color:#FFFFFF' : 'border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F'}`;
+    const chip = (ok, label) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:980px;font-size:12px;font-weight:600;${ok ? 'background:#E3F1E7;color:#1E5B34' : 'background:#EFEFF1;color:#6E6E73'}">${ok ? '✓' : '•'} ${label}</span>`;
+    const LABEL = { placed: 'New order', paid: 'Payment', shipped: 'Shipped', test: 'Test' };
+    const render = async (note) => {
+      const [{ data: settings }, { data: recent = [] }, st] = await Promise.all([
+        db.from('alert_settings').select('*').eq('id', 1).single(),
+        db.from('notifications').select('*, orders(number)').order('created_at', { ascending: false }).limit(8),
+        db.functions.invoke('order-alerts', { body: { action: 'status' } }),
+      ]);
+      const s0 = settings || {};
+      const status = st.data || {};
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <h2 id="alerts-title" style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.015em">Order alerts</h2>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${chip(status.email, 'Email')}${chip(status.store_whatsapp, 'Your WhatsApp')}${chip(status.customer_whatsapp, 'Customer WhatsApp')}</div>
+        </div>
+        <p style="margin:8px 0 0;color:#6E6E73;font-size:15px;line-height:1.5">You get an email and a WhatsApp message for every new order and payment. Customers get their confirmation, payment receipt and shipping update.</p>
+        <form data-alerts style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;padding-top:16px">
+          <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#6E6E73">Send store alerts to (email)
+            <input type="email" name="owner_email" autocomplete="email" value="${esc(s0.owner_email || '')}" placeholder="you@email.com" style="${field}"></label>
+          <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#6E6E73">Your WhatsApp number
+            <input type="tel" name="owner_whatsapp" autocomplete="tel" value="${esc(s0.owner_whatsapp || '')}" placeholder="+234 803 123 4567" style="${field}"></label>
+          <label style="display:flex;align-items:center;gap:10px;font-size:15px;min-height:44px;grid-column:1/-1;cursor:pointer">
+            <input type="checkbox" name="notify_customers" ${s0.notify_customers !== false ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">Send customers email and WhatsApp updates</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;grid-column:1/-1">
+            <button type="submit" style="${btn(true)}">Save</button>
+            <button type="button" data-test style="${btn(false)}">Send test alert</button>
+          </div>
+        </form>
+        ${note ? `<div role="status" style="margin-top:12px;font-size:15px;line-height:1.5">${note}</div>` : ''}
+        <div style="padding-top:18px">
+          <div style="font-size:13px;font-weight:600;color:#6E6E73;padding-bottom:6px">Latest alerts</div>
+          ${recent.length ? recent.map((n) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid rgba(0,0,0,.06);font-size:14px">
+              <span>${LABEL[n.event] || n.event}${n.orders ? ' · #' + esc(n.orders.number) : ''} · ${n.audience === 'owner' ? 'You' : 'Customer'} by ${n.channel === 'email' ? 'email' : 'WhatsApp'}<br><span style="color:#6E6E73;font-size:13px">${fmtDateTime(n.created_at)}${n.error ? ' · ' + esc(n.error) : ''}</span></span>
+              ${pill({ sent: 'paid', failed: 'refunded', skipped: 'draft', pending: 'unpaid', sending: 'unpaid' }[n.status]).replace(/Paid|Refunded|Draft|Awaiting payment/, { sent: 'Sent', failed: 'Failed', skipped: 'Not sent', pending: 'Queued', sending: 'Sending' }[n.status])}
+            </div>`).join('') : '<p style="margin:0;color:#6E6E73;font-size:15px">No alerts yet.</p>'}
+        </div>`;
+      const form = $('[data-alerts]', card);
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const patch = {
+          owner_email: String(fd.get('owner_email') || '').trim() || null,
+          owner_whatsapp: String(fd.get('owner_whatsapp') || '').trim() || null,
+          notify_customers: fd.get('notify_customers') === 'on',
+          updated_at: new Date().toISOString(),
+        };
+        const { error } = await db.from('alert_settings').update(patch).eq('id', 1);
+        await render(error ? `<span class="dh-error">Couldn’t save: ${esc(error.message)}</span>` : 'Saved.');
+      });
+      $('[data-test]', card).addEventListener('click', async (e) => {
+        e.target.classList.add('dh-busy'); e.target.textContent = 'Sending…';
+        const { data, error } = await db.functions.invoke('order-alerts', { body: { action: 'test' } });
+        const lines = error ? [`<span class="dh-error">The test couldn’t run.</span>`] : (data.results || []).map((r) =>
+          `${r.channel === 'email' ? 'Email' : 'WhatsApp'}: ${r.status === 'sent' ? '<strong style="color:#1E5B34">sent</strong>' : `<strong>${r.status === 'skipped' ? 'not sent' : 'failed'}</strong> — ${esc(r.error || '')}`}`);
+        await render(lines.join('<br>'));
+      });
+    };
+    await render();
   }
 
   /* --- motion --- */
