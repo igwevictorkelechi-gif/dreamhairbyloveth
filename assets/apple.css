@@ -361,11 +361,13 @@ button[data-wish] svg { transition: fill .2s var(--ease); }
 button[data-wish][aria-pressed="true"] { transform: none; }
 @media (min-width: 821px) { .dh-menu-extra { display: none !important; } }
 #saved button { white-space: nowrap; }
-@media (max-width: 520px) {
-  /* all five account shortcuts fit on one line */
-  .dh-icon-row { gap: 8px !important; overflow-x: visible !important; }
-  .dh-icon-row > * { flex: 1 1 0 !important; min-width: 0 !important; padding: 10px 2px !important; font-size: 12px !important; gap: 6px !important; }
-  .dh-icon-row > * > span { width: 40px !important; height: 40px !important; }
+.dh-seg:hover, .dh-seg:focus-visible { background: #FFFFFF !important; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+.dh-seg svg { color: #6E1A2C; flex: none; }
+.dh-icon-row { margin: 10px 0 6px; }
+@media (max-width: 640px) {
+  /* five shortcuts on one line: icon above a short label */
+  .dh-icon-row { border-radius: 22px !important; }
+  .dh-seg { flex-direction: column; gap: 4px !important; min-height: 60px !important; padding: 6px 2px !important; border-radius: 18px !important; font-size: 12px !important; min-width: 0; }
 }
 @media (max-width: 420px) {
   [data-account] .glass-light { padding: 20px !important; }
