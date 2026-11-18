@@ -15,6 +15,7 @@
   const naira = (n) => '₦' + Math.round(Number(n) || 0).toLocaleString('en-NG');
   const short = (n) => n >= 1e6 ? '₦' + (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M'
     : n >= 1e3 ? '₦' + (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k' : naira(n);
+  const nairaKobo = (k) => '₦' + (Number(k) / 100).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const text = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
   const byText = (sel, t, root) => $$(sel, root).find((e) => text(e) === t);
@@ -137,6 +138,7 @@
     const add = $$('button', card).find((b) => /add to bag/i.test(text(b)));
     if (add) {
       stripClick(add);
+      Object.assign(add.style, { background: 'transparent', color: '#1D1D1F', border: '1px solid rgba(0,0,0,.16)' });
       add.disabled = p.stock <= 0;
       if (p.stock <= 0) add.textContent = 'Sold out';
       add.addEventListener('click', () => { cart.add(p, defaultOptions(p)); toast(`${p.name} added to your bag`); });
@@ -160,6 +162,21 @@
         grid.insertBefore(card, anchor);
       });
     });
+    const filters = $('aside[aria-label="Filters"]');
+    if (filters && !$('.dh-filter-toggle', filters)) {
+      const head = filters.firstElementChild;
+      const t = document.createElement('button');
+      t.type = 'button';
+      t.className = 'dh-filter-toggle';
+      t.setAttribute('aria-expanded', 'false');
+      t.textContent = 'Show filters';
+      t.addEventListener('click', () => {
+        const open = filters.classList.toggle('open');
+        t.setAttribute('aria-expanded', String(open));
+        t.textContent = open ? 'Hide filters' : 'Show filters';
+      });
+      head.appendChild(t);
+    }
     const count = leaf(document, /^\d+ styles$/);
     if (count) count.textContent = `${products.length} style${products.length === 1 ? '' : 's'}`;
     // the hero "New in" card and other single product links
@@ -392,7 +409,10 @@
       const fee = leaf(label, /₦|^Free$/); if (fee) fee.textContent = opt.fee_ngn ? naira(opt.fee_ngn) : 'Free';
     });
 
-    // payment: no card processing yet
+    // payment: bank transfer through CheqPay (confirmed automatically) or pay on pick-up.
+    // Card fields are never shown: card numbers must not pass through this site.
+    const { data: payOpts } = await db.rpc('payment_options');
+    const cheqpay = !!(payOpts && payOpts.cheqpay);
     const pay = $$('input[type="radio"][name="pay"]');
     const [card, bank, other] = pay;
     if (card) {
@@ -404,13 +424,17 @@
         $$('input', box).forEach((i) => { i.disabled = true; i.required = false; });
       }
       card.disabled = true;
-      const cl = card.closest('label');
-      cl.style.opacity = '.5';
-      const sub = leaf(cl, /Visa/); if (sub) sub.textContent = 'Card payments are coming soon';
+      card.closest('label').hidden = true;
     }
     if (bank) {
       bank.value = 'bank_transfer'; bank.checked = true;
-      const d = leaf(bank.closest('label'), /\[BANK/); if (d) d.textContent = "We'll send our bank details on WhatsApp or email after you order.";
+      const bl = bank.closest('label');
+      const nm = leaf(bl, /^Bank transfer$/);
+      const d = leaf(bl, /\[BANK/);
+      if (cheqpay) {
+        if (nm) nm.innerHTML = 'Bank transfer <span style="font-size:12px;font-weight:600;color:#6E1A2C;background:#F6E3E1;border-radius:980px;padding:2px 8px;margin-left:6px">CheqPay</span>';
+        if (d) d.textContent = 'You get an account number and an exact amount. Your payment is confirmed automatically, usually within a minute.';
+      } else if (d) d.textContent = "We'll send our bank details on WhatsApp or email after you order.";
     }
     if (other) {
       other.value = 'pay_on_pickup';
@@ -482,14 +506,24 @@
       }
       try { sessionStorage.setItem('dh-last-order', JSON.stringify(data)); } catch { /* ignore */ }
       cart.set([]);
-      location.href = '/order-confirmed?order=' + encodeURIComponent(data.number);
+      location.href = '/order-confirmed?order=' + encodeURIComponent(data.number) + '&t=' + encodeURIComponent(data.token);
     });
   }
 
   /* ---------- order confirmed ---------- */
-  function initConfirmed() {
+  async function initConfirmed() {
     let o = null;
     try { o = JSON.parse(sessionStorage.getItem('dh-last-order')); } catch { /* ignore */ }
+    const qs = new URLSearchParams(location.search);
+    const number = qs.get('order') || (o && o.number);
+    const token = qs.get('t') || (o && o.token);
+    if (o && number && o.number !== number) o = null;
+    let live = null;
+    if (db && number && token) {
+      const { data } = await db.rpc('order_payment_status', { p_number: number, p_token: token });
+      live = data;
+    }
+    if (live && o) Object.assign(o, { payment_status: live.payment_status, bank: live.bank || o.bank, pay_amount_kobo: live.pay_amount_kobo });
     const thanks = startsWith('span', 'Thank you');
     const h1 = $('h1');
     if (!o) {
@@ -544,6 +578,51 @@
       if (totalPaid.nextElementSibling) totalPaid.nextElementSibling.textContent = naira(o.total_ngn);
     }
     $$('a').filter((a) => /track my order/i.test(text(a))).forEach((a) => { a.href = '/help'; a.firstChild.textContent = 'Questions about your order? '; });
+    if (o.payment_provider === 'cheqpay') renderCheqpayPanel(o, number, token);
+  }
+
+  function renderCheqpayPanel(o, number, token) {
+    const anchor = $('h1') && $('h1').nextElementSibling;
+    if (!anchor || !o.bank) return;
+    const panel = document.createElement('section');
+    panel.className = 'glass-light';
+    panel.setAttribute('aria-labelledby', 'pay-title');
+    panel.style.cssText = 'width:100%;box-sizing:border-box;border-radius:20px;padding:28px;text-align:left;display:flex;flex-direction:column;gap:18px';
+    const row = (label, value, copy) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid rgba(0,0,0,.06)">
+        <span style="display:flex;flex-direction:column;gap:2px"><span style="font-size:13px;color:#6E6E73">${label}</span><span style="font-size:20px;font-weight:600;letter-spacing:-0.01em">${esc(value)}</span></span>
+        ${copy ? `<button type="button" class="dh-copy" data-copy="${esc(copy)}" aria-label="Copy ${label.toLowerCase()}">Copy</button>` : ''}</div>`;
+    const amountPlain = (Number(o.pay_amount_kobo) / 100).toFixed(2);
+    panel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div><h2 id="pay-title" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Pay by bank transfer</h2>
+        <p style="margin:6px 0 0;color:#6E6E73;font-size:15px;line-height:1.5">Send the exact amount, kobo included, so your payment is matched to order #${esc(o.number)} automatically.</p></div>
+        <span style="font-size:12px;font-weight:600;color:#6E1A2C;background:#F6E3E1;border-radius:980px;padding:4px 10px">Secured by CheqPay</span>
+      </div>
+      <div>${row('Amount', nairaKobo(o.pay_amount_kobo), amountPlain)}${row('Account number', o.bank.account_number, o.bank.account_number)}${row('Bank', o.bank.bank_name)}${row('Account name', o.bank.account_name)}</div>
+      <div data-pay-status role="status" aria-live="polite" style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:14px;background:#FFF7EA;font-size:15px">
+        <span class="dh-pulse"></span><span>Waiting for your transfer… this page updates by itself.</span></div>`;
+    anchor.insertAdjacentElement('afterend', panel);
+    $$('[data-copy]', panel).forEach((b) => b.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); } catch { toast('Copy failed — please copy it manually'); }
+    }));
+    const statusEl = $('[data-pay-status]', panel);
+    const paid = () => {
+      statusEl.style.background = '#E3F1E7';
+      statusEl.innerHTML = '<span class="dh-pulse done"></span><span><strong>Payment received.</strong> Thank you — we’re preparing your order.</span>';
+      const pm = byText('span', 'Payment');
+      const d = pm && pm.nextElementSibling && pm.nextElementSibling.nextElementSibling;
+      if (d) d.innerHTML = `Paid ${nairaKobo(o.pay_amount_kobo)}<br>Confirmed by CheqPay`;
+    };
+    if (o.payment_status === 'paid') return paid();
+    if (!number || !token) return;
+    const started = Date.now();
+    const poll = async () => {
+      if (Date.now() - started > 45 * 60 * 1000) return;
+      const { data } = await db.rpc('order_payment_status', { p_number: number, p_token: token });
+      if (data && data.payment_status === 'paid') { paid(); return; }
+      setTimeout(poll, document.hidden ? 15000 : 5000);
+    };
+    setTimeout(poll, 5000);
   }
 
   /* ---------- newsletter + contact ---------- */
@@ -840,7 +919,8 @@
           <div style="display:flex;flex-direction:column;gap:4px">
             <div style="font-size:13px;font-weight:600;color:#6E6E73">Delivery · ${esc(o.delivery_code)}</div>
             <div>${esc([o.address, o.address2, o.city, o.state].filter(Boolean).join(', '))}</div>
-            <div style="font-size:13px;color:#6E6E73">Payment method: ${o.payment_method === 'pay_on_pickup' ? 'Pay on pick-up' : 'Bank transfer'}${o.marketing_opt_in ? ' · Subscribed to emails' : ''}</div>
+            <div style="font-size:13px;color:#6E6E73">Payment method: ${o.payment_method === 'pay_on_pickup' ? 'Pay on pick-up' : o.payment_provider === 'cheqpay' ? 'Bank transfer via CheqPay' : 'Bank transfer (manual)'}${o.marketing_opt_in ? ' · Subscribed to emails' : ''}</div>
+            ${o.payment_provider === 'cheqpay' ? `<div style="font-size:13px;color:#6E6E73">Expected transfer: <strong style="color:#1D1D1F">${nairaKobo(o.pay_amount_kobo)}</strong>${o.paid_at ? ` · paid ${fmtDateTime(o.paid_at)}` : ''}${o.payer && o.payer.name ? ` · from ${esc(o.payer.name)}${o.payer.bank_name ? ' (' + esc(o.payer.bank_name) + ')' : ''}` : ''}${o.payment_ref ? ` · ref ${esc(o.payment_ref)}` : ''}</div>` : ''}
           </div>
           <ul style="list-style:none;margin:0;padding:0">${items}</ul>
           <div style="display:flex;flex-direction:column;gap:6px;font-size:15px">
@@ -907,6 +987,12 @@
         if (/vs previous 30 days/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace('vs previous 30 days', 'Last 30 days');
       }
     });
+
+    const kpiLabel = $$('span, div, p').find((e) => !e.children.length && text(e) === 'New customers' && !e.closest('table, h2'));
+    let kpiGrid = kpiLabel;
+    while (kpiGrid && kpiGrid.parentElement && getComputedStyle(kpiGrid.parentElement).display !== 'grid') kpiGrid = kpiGrid.parentElement;
+    if (kpiGrid && kpiGrid.parentElement) kpiGrid.parentElement.style.gridTemplateColumns = 'repeat(auto-fit, minmax(200px, 1fr))';
+    await renderPaymentsCard();
 
     // revenue chart: one bar per day, last 30 days
     const revH = $$('h2').find((h) => text(h) === 'Revenue');
@@ -986,6 +1072,98 @@
         : '<p style="margin:0;color:#6E6E73">Everything is well stocked.</p>';
       card.appendChild(box);
     }
+  }
+
+  async function renderPaymentsCard() {
+    const revH = $$('h2').find((h) => text(h) === 'Revenue');
+    const ref = revH && revH.closest('.glass-light');
+    if (!ref) return;
+    const card = document.createElement('section');
+    card.className = 'glass-light';
+    card.setAttribute('style', ref.getAttribute('style') || '');
+    card.setAttribute('aria-labelledby', 'payments-title');
+    ref.insertAdjacentElement('beforebegin', card);
+    const render = async (status, err) => {
+      const { data: recent = [] } = await db.from('payments').select('*, orders(number)').order('created_at', { ascending: false }).limit(5);
+      const s = status && status.settings;
+      const connected = s && s.account_number;
+      const check = (ok, label) => `<li style="display:flex;gap:10px;align-items:flex-start;padding:6px 0"><span aria-hidden="true" style="flex:none;width:20px;height:20px;border-radius:980px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;${ok ? 'background:#E3F1E7;color:#1E5B34">✓' : 'background:#EFEFF1;color:#6E6E73">•'}</span><span>${label}</span></li>`;
+      const btn = 'min-height:44px;padding:0 20px;border-radius:980px;border:none;background:#6E1A2C;color:#FFFFFF;font:inherit;font-weight:600;cursor:pointer';
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <h2 id="payments-title" style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.015em">Payments</h2>
+          ${connected ? pill('paid').replace('Paid', `CheqPay · ${s.mode === 'live' ? 'Live' : 'Test mode'}`) : pill('unfulfilled').replace('Unfulfilled', 'CheqPay not connected')}
+        </div>
+        ${connected ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding-top:16px">
+            <div><div style="font-size:13px;color:#6E6E73">Customers pay into</div><div style="font-size:20px;font-weight:600">${esc(s.account_number)}</div></div>
+            <div><div style="font-size:13px;color:#6E6E73">Bank</div><div style="font-weight:600">${esc(s.bank_name)}</div></div>
+            <div><div style="font-size:13px;color:#6E6E73">Account name</div><div style="font-weight:600">${esc(s.account_name)}</div></div>
+          </div>` : `<ol style="list-style:none;margin:14px 0 0;padding:0;font-size:15px;line-height:1.5">
+            ${check(false, 'In your CheqPay developer dashboard (developers.mycheqpay.com), open a virtual account for the store and create a secret API key.')}
+            ${check(status && status.webhook_secret_set, `Add a webhook for <strong>deposit.received</strong> pointing to <code style="font-size:13px;word-break:break-all">${esc(status ? status.webhook_url : '')}</code> and copy its signing secret.`)}
+            ${check(status && status.api_key_set && status.webhook_secret_set, 'In Supabase → Edge Functions → Secrets, add <code>CHEQPAY_API_KEY</code> and <code>CHEQPAY_WEBHOOK_SECRET</code>.')}
+            ${check(false, 'Press Connect CheqPay below.')}
+          </ol>`}
+        ${err ? `<p class="dh-error" role="alert" style="margin:12px 0 0">${esc(err)}</p>` : ''}
+        <div style="display:flex;gap:10px;flex-wrap:wrap;padding-top:16px">
+          <button type="button" data-connect style="${btn}">${connected ? 'Refresh account details' : 'Connect CheqPay'}</button>
+        </div>
+        <div style="padding-top:18px">
+          <div style="font-size:13px;font-weight:600;color:#6E6E73;padding-bottom:6px">Latest transfers</div>
+          ${recent.length ? recent.map((p) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid rgba(0,0,0,.06);font-size:15px">
+              <span>${nairaKobo(p.amount_kobo)} <span style="color:#6E6E73">· ${esc((p.payer && p.payer.name) || 'Unknown sender')} · ${fmtDateTime(p.created_at)}</span></span>
+              ${p.status === 'matched' && p.orders ? `<a href="/admin/orders#${esc(p.orders.number)}" style="color:#1E5B34;font-weight:600;text-decoration:none">#${esc(p.orders.number)}</a>` : pill(p.status === 'ignored' ? 'draft' : 'unpaid').replace(/Draft|Awaiting payment/, p.status === 'ignored' ? 'Ignored' : 'Unmatched')}
+            </div>`).join('') : '<p style="margin:0;color:#6E6E73;font-size:15px">No transfers yet.</p>'}
+        </div>`;
+      const b = $('[data-connect]', card);
+      b.addEventListener('click', async () => {
+        b.classList.add('dh-busy'); b.textContent = 'Connecting…';
+        const { data, error } = await db.functions.invoke('cheqpay-connect', { body: { action: 'connect' } });
+        let msg = null;
+        if (error) { try { msg = (await error.context.json()).error; } catch { msg = error.message; } }
+        await render(data || status, msg);
+        if (!msg) toast('CheqPay connected');
+      });
+    };
+    const { data } = await db.functions.invoke('cheqpay-connect', { body: { action: 'status' } });
+    await render(data, data ? null : 'Couldn’t reach the payments service.');
+  }
+
+  /* --- motion --- */
+  function initMotion() {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    document.documentElement.classList.add('motion');
+    const header = $('header.glass-bar-light');
+    if (header) {
+      const onScroll = () => header.classList.toggle('scrolled', scrollY > 8);
+      addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+    }
+    const picks = $$('main h1, section h1, section h2, article, .glass-light, .glass, section .zoom, main table, footer > div, section p, section ol, section ul')
+      .filter((el) => !el.closest('header, aside, .dh-toast') && el.offsetParent !== null);
+    const chosen = [];
+    picks.forEach((el) => { if (!chosen.some((c) => c.contains(el))) chosen.push(el); });
+    const counts = new Map();
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (!e.isIntersecting) return;
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      });
+    }, { threshold: 0.08, rootMargin: '0px 0px -6% 0px' });
+    chosen.forEach((el) => {
+      const n = counts.get(el.parentElement) || 0;
+      counts.set(el.parentElement, n + 1);
+      el.style.setProperty('--i', String(Math.min(n, 6)));
+      el.classList.add('reveal');
+      el.addEventListener('transitionend', function done(ev) {
+        if (ev.target !== el || ev.propertyName !== 'transform') return;
+        el.classList.remove('reveal', 'in');
+        el.style.removeProperty('--i');
+        el.removeEventListener('transitionend', done);
+      });
+      io.observe(el);
+    });
   }
 
   /* --- products --- */
@@ -1082,14 +1260,18 @@
         initMenu();
         updateBagBadge();
         initForms();
-        if (!db) return;
-        if (page === 'checkout') return initCheckout();
-        if (page === 'order-confirmed') return initConfirmed();
-        const products = await loadProducts();
-        if (page === 'product') return initProductPage(products);
-        if (page === 'bag') return initBagPage(products);
-        if (['home', 'shop'].includes(page)) return renderProductGrids(products);
-        return;
+        try {
+          if (!db) return;
+          if (page === 'checkout') return await initCheckout();
+          if (page === 'order-confirmed') return await initConfirmed();
+          const products = await loadProducts();
+          if (page === 'product') return initProductPage(products);
+          if (page === 'bag') return initBagPage(products);
+          if (['home', 'shop'].includes(page)) return renderProductGrids(products);
+          return;
+        } finally {
+          initMotion();
+        }
       }
       if (!db) return;
       if (page === 'admin-login') return initAdminLogin();
@@ -1097,7 +1279,7 @@
       if (!user) return;
       initAdminChrome(user);
       const init = { 'admin-orders': initAdminOrders, 'admin-dashboard': initAdminDashboard, 'admin-products': initAdminProducts, 'admin-customers': initAdminCustomers }[page];
-      try { if (init) await init(); } finally { document.body.classList.add('dh-auth'); }
+      try { if (init) await init(); } finally { document.body.classList.add('dh-auth'); initMotion(); }
     } catch (err) {
       console.error(err);
       toast('Something went wrong loading this page. Please refresh.');

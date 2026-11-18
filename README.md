@@ -56,6 +56,44 @@ Admin → Products lets you change price, stock and visibility. To add a new
 product, add a row to `products` in the Supabase table editor and put its photo
 in `images/`.
 
+## Payments: CheqPay
+
+Shoppers pay by bank transfer into the store's **CheqPay virtual account**. Each
+order gets a unique amount (the total plus 1–999 kobo, for example ₦575,000.37),
+so the incoming transfer can be matched to its order automatically. When CheqPay
+sends `deposit.received`, the `cheqpay-webhook` function checks the signature
+(Standard Webhooks, HMAC-SHA256) and `record_cheqpay_deposit()` marks the order
+**paid** and moves it to **processing**. The confirmation page updates by itself.
+Transfers that match no order show as *Unmatched* in Admin → Dashboard → Payments.
+
+Card numbers never touch this site.
+
+### Connect it (once)
+
+1. In the CheqPay developer dashboard (developers.mycheqpay.com): open a
+   virtual account for the store's verified customer, and create a secret API
+   key with `virtual_accounts:read`. Start with a `cp_test_` key to try it out.
+2. Add a webhook endpoint for **deposit.received** pointing to
+   `https://elaoxcotnspbsljrcscb.supabase.co/functions/v1/cheqpay-webhook` and copy
+   its signing secret (`whsec_…`).
+3. Supabase dashboard → Edge Functions → Secrets: add `CHEQPAY_API_KEY` and
+   `CHEQPAY_WEBHOOK_SECRET`.
+4. Admin → Dashboard → Payments → **Connect CheqPay**. Checkout switches to
+   CheqPay transfers straight away; until then it falls back to manual bank
+   transfer.
+
+In test mode, CheqPay's sandbox "simulate deposit" sends a real signed webhook,
+so you can pay a test order end to end. Switch to live by replacing the key with
+a `cp_live_` one and pressing **Refresh account details**.
+
+Server code lives in `supabase/functions/` (`cheqpay-webhook`, `cheqpay-connect`).
+
+## Motion
+
+Sections, cards and containers rise into place as they scroll into view, the
+header gains a soft shadow on scroll, and buttons press in on tap. Everything is
+switched off when the visitor's device asks for reduced motion.
+
 ## Still to fill in
 
 Text in square brackets is a placeholder for real details, for example
