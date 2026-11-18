@@ -76,6 +76,64 @@
     });
   }
 
+  /* ---------- wishlist ("saved looks") ---------- */
+  const WL_KEY = 'dh-wishlist-v1';
+  const wl = {
+    slugs: new Set((() => { try { return JSON.parse(localStorage.getItem(WL_KEY)) || []; } catch { return []; } })()),
+    uid: null,
+    save() { try { localStorage.setItem(WL_KEY, JSON.stringify([...this.slugs])); } catch { /* private mode */ } },
+    has(slug) { return this.slugs.has(slug); },
+    async sync() {
+      if (!db) return;
+      const { data: { session } } = await db.auth.getSession();
+      this.uid = session ? session.user.id : null;
+      if (!this.uid) return;
+      const { data } = await db.from('wishlist').select('product_slug');
+      const remote = new Set((data || []).map((r) => r.product_slug));
+      const missing = [...this.slugs].filter((x) => !remote.has(x));
+      if (missing.length) await db.from('wishlist').insert(missing.map((x) => ({ user_id: this.uid, product_slug: x }))).then(() => {}, () => {});
+      remote.forEach((x) => this.slugs.add(x));
+      this.save();
+    },
+    async toggle(slug) {
+      const on = !this.slugs.has(slug);
+      if (on) this.slugs.add(slug); else this.slugs.delete(slug);
+      this.save();
+      paintWish();
+      if (this.uid) {
+        if (on) await db.from('wishlist').insert({ user_id: this.uid, product_slug: slug }).then(() => {}, () => {});
+        else await db.from('wishlist').delete().eq('user_id', this.uid).eq('product_slug', slug).then(() => {}, () => {});
+      }
+      return on;
+    },
+  };
+  function paintWish() {
+    $$('[data-wish]').forEach((b) => {
+      const on = wl.has(b.dataset.wish);
+      const name = b.dataset.name || 'this wig';
+      b.setAttribute('aria-pressed', String(on));
+      b.setAttribute('aria-label', on ? `Remove ${name} from saved looks` : `Save ${name}`);
+      const svg = $('svg', b);
+      if (svg) svg.style.fill = on ? 'currentColor' : 'none';
+      b.style.color = on ? '#8A1F35' : '';
+    });
+    const n = wl.slugs.size;
+    $$('header button[aria-label^="Wishlist"], header button[aria-label^="Saved looks"]').forEach((b) => {
+      b.setAttribute('aria-label', n ? `Saved looks, ${n}` : 'Saved looks');
+      const svg = $('svg', b);
+      if (svg) svg.style.fill = n ? 'currentColor' : 'none';
+    });
+  }
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-wish]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const on = await wl.toggle(b.dataset.wish);
+    toast(on ? `${b.dataset.name || 'Saved'} — saved to your looks` : 'Removed from your saved looks');
+    if (page === 'account') document.dispatchEvent(new CustomEvent('dh-wishlist-changed'));
+  });
+
   /* ---------- products ---------- */
   let productsPromise;
   function loadProducts() {
@@ -95,6 +153,18 @@
     const nav = header && $('nav[aria-label="Main"]', header);
     if (!nav) return;
     const icons = $$('div', header).filter((d) => d.querySelector('button[aria-label="Account"]')).pop();
+    const heart = $('button[aria-label="Wishlist"]', header);
+    if (heart) { stripClick(heart); heart.addEventListener('click', () => { location.href = '/account#saved'; }); }
+    const tmpl = $('a', nav);
+    [['Saved looks', '/account#saved'], ['My account', '/account']].forEach(([label, href]) => {
+      if ($$('a', nav).some((a) => text(a) === label)) return;
+      const a = document.createElement('a');
+      a.href = href;
+      a.textContent = label;
+      if (tmpl) a.setAttribute('style', tmpl.getAttribute('style') || '');
+      a.className = 'dh-menu-extra';
+      nav.appendChild(a);
+    });
     nav.id = 'main-menu';
     nav.classList.add('menu-sheet');
     const btn = document.createElement('button');
@@ -134,7 +204,7 @@
     const sub = leaf(card, /\[LENGTH\]|·/);
     if (sub && sub !== price) sub.textContent = [p.style, p.laces[0]].filter(Boolean).join(' · ');
     const wish = $('button[aria-label^="Save"]', card);
-    if (wish) wish.setAttribute('aria-label', `Save ${p.name} to wishlist`);
+    if (wish) { stripClick(wish); wish.dataset.wish = p.slug; wish.dataset.name = p.name; }
     const add = $$('button', card).find((b) => /add to bag/i.test(text(b)));
     if (add) {
       stripClick(add);
@@ -216,6 +286,8 @@
       if (img.closest('header, footer')) return;
       img.src = p.image; img.alt = p.name; img.style.objectPosition = p.image_position || 'center';
     });
+    const mainWish = $('button[aria-label="Save to wishlist"]');
+    if (mainWish) { stripClick(mainWish); mainWish.dataset.wish = p.slug; mainWish.dataset.name = p.name; }
     const mainBadge = $$('span').find((s) => /^(Bestseller|New)$/.test(text(s)) && !s.closest('article'));
     if (mainBadge) { if (p.badge) mainBadge.textContent = p.badge; else mainBadge.remove(); }
 
@@ -676,7 +748,7 @@
     let n = header.nextElementSibling;
     while (n && n !== footer) { const next = n.nextElementSibling; n.remove(); n = next; }
     const sec = document.createElement('section');
-    sec.innerHTML = `<div style="max-width:1200px;margin:0 auto;padding:40px 40px 96px;display:flex;flex-direction:column;gap:28px">
+    sec.innerHTML = `<div style="max-width: 1200px; margin: 0 auto; padding: 40px 40px 96px; display: flex; flex-direction: column; gap: 28px">
       <nav aria-label="Breadcrumb" style="display:flex;gap:10px;font-size:15px;color:#6E6E73"><a href="/" style="text-decoration:none;color:#6E6E73">Home</a><span aria-hidden="true">/</span><span aria-current="page" style="color:#1D1D1F">My account</span></nav>
       <div data-account></div></div>`;
     footer.insertAdjacentElement('beforebegin', sec);
@@ -717,6 +789,13 @@
         </form>
       </div>`;
     $$('[data-mode]', box).forEach((b) => b.addEventListener('click', () => renderSignedOut(box, b.dataset.mode)));
+    const savedSec = document.createElement('section');
+    savedSec.id = 'saved';
+    savedSec.className = 'glass-light';
+    savedSec.setAttribute('aria-labelledby', 'saved-h');
+    savedSec.setAttribute('style', CARD + ';margin-top:28px');
+    box.appendChild(savedSec);
+    renderSaved(savedSec, false).then(afterAccountRender);
     const form = $('[data-form]', box);
     const submit = $('button[type=submit]', form);
     form.addEventListener('submit', async (e) => {
@@ -737,6 +816,7 @@
         const next = new URLSearchParams(location.search).get('next');
         if (next && next.startsWith('/') && !next.startsWith('//')) { location.href = next; return; }
         toast(mode === 'create' ? 'Welcome to the family' : 'Signed in');
+        await wl.sync();
         renderSignedIn(box, data.session);
       } catch (err) {
         submit.classList.remove('dh-busy');
@@ -765,20 +845,34 @@
         <span style="display:flex;gap:6px;flex-wrap:wrap">${pill(o.payment_status)}${pill(o.status)}</span></span>
         <span aria-hidden="true" style="color:#6E6E73">›</span></a>`;
     };
+    const ico = (d) => `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+    const ICONS = {
+      orders: '<path d="M5 8h14l-1.5 12h-11z"></path><path d="M9 8V6a3 3 0 0 1 6 0v2"></path>',
+      saved: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"></path>',
+      details: '<circle cx="12" cy="8" r="4"></circle><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"></path>',
+      password: '<rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path>',
+      signout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"></path><path d="M10 16l-4-4 4-4"></path><path d="M6 12h10"></path>',
+    };
+    const tile = (key, label, href) => `<${href ? `a href="${href}"` : 'button type="button" data-signout-tile'} class="dh-hover" style="flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:88px;padding:14px 12px;border-radius:18px;background:rgba(255,255,255,.75);border:1px solid rgba(0,0,0,.07);text-decoration:none;color:#1D1D1F;font:inherit;font-size:13px;font-weight:600;cursor:pointer">
+        <span style="width:46px;height:46px;border-radius:980px;background:#F6E3E1;color:#6E1A2C;display:flex;align-items:center;justify-content:center">${ico(ICONS[key])}</span>${label}</${href ? 'a' : 'button'}>`;
     box.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:6px">
         <p style="margin:0;font-size:17px;font-weight:600;color:#8A1F35">My account</p>
         <h1 style="margin:0;font-size:48px;line-height:1.08;font-weight:700;letter-spacing:-0.025em">${first ? 'Hi, ' + esc(first) : 'Welcome'}</h1>
-        <p style="margin:4px 0 0;color:#6E6E73;font-size:16px">${esc(session.user.email)}</p>
+        <p style="margin:4px 0 0;color:#6E6E73;font-size:16px;overflow-wrap:anywhere">${esc(session.user.email)}</p>
       </div>
+      <nav aria-label="Account sections" class="dh-icon-row" style="display:flex;gap:12px;overflow-x:auto;padding:4px 2px 10px;scrollbar-width:none">
+        ${tile('orders', 'Orders', '#account-orders')}${tile('saved', 'Saved', '#saved')}${tile('details', 'Details', '#account-details')}${tile('password', 'Password', '#account-password')}${tile('signout', 'Sign out')}
+      </nav>
+      <section id="saved" class="glass-light" aria-labelledby="saved-h" style="${CARD}"></section>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:24px;align-items:start;padding-top:8px">
-        <section class="glass-light" aria-labelledby="orders-h" style="${CARD}">
+        <section id="account-orders" class="glass-light" aria-labelledby="orders-h" style="${CARD}">
           <h2 id="orders-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Your orders</h2>
           ${orders.length ? orders.map(orderRow).join('') : `<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">No orders yet. Orders you place while signed in show up here.</p>
             <a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Shop wigs</a>`}
         </section>
         <div style="display:flex;flex-direction:column;gap:24px">
-          <form class="glass-light" data-profile aria-labelledby="details-h" style="${CARD}">
+          <form id="account-details" class="glass-light" data-profile aria-labelledby="details-h" style="${CARD}">
             <h2 id="details-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Your details</h2>
             <p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">We use these to fill in checkout for you.</p>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
@@ -795,7 +889,7 @@
             <label style="display:flex;gap:10px;align-items:center;font-size:15px;cursor:pointer"><input type="checkbox" name="marketing_opt_in" ${p.marketing_opt_in ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">Email me first looks and offers</label>
             <button type="submit" style="${BTN}">Save details</button>
           </form>
-          <form class="glass-light" data-password aria-labelledby="pw-h" style="${CARD}">
+          <form id="account-password" class="glass-light" data-password aria-labelledby="pw-h" style="${CARD}">
             <h2 id="pw-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Password</h2>
             ${input('password', 'New password <span style="color:#6E6E73;font-weight:400">at least 8 characters</span>', 'password', 'autocomplete="new-password" minlength="8" required')}
             <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" style="${BTN2}">Change password</button><button type="button" data-signout style="${BTN2}">Sign out</button></div>
@@ -833,7 +927,51 @@
       field.value = '';
       toast('Password changed');
     });
-    $('[data-signout]', box).addEventListener('click', async () => { await db.auth.signOut(); toast('Signed out'); renderSignedOut(box, 'signin'); });
+    const signOut = async () => { await db.auth.signOut(); wl.uid = null; toast('Signed out'); renderSignedOut(box, 'signin'); };
+    $('[data-signout]', box).addEventListener('click', signOut);
+    $('[data-signout-tile]', box).addEventListener('click', signOut);
+    await renderSaved($('#saved', box), true);
+    afterAccountRender();
+  }
+
+  async function renderSaved(sec, signedIn) {
+    if (!sec) return;
+    const products = await loadProducts();
+    const draw = () => {
+      const saved = products.filter((x) => wl.has(x.slug));
+      if (!signedIn && !saved.length) { sec.hidden = true; return; }
+      sec.hidden = false;
+      sec.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+          <h2 id="saved-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Saved looks</h2>
+          <span style="color:#6E6E73;font-size:15px">${saved.length} saved</span></div>
+        ${signedIn ? '' : '<p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">Saved on this device. Sign in or create an account to keep them everywhere.</p>'}
+        ${saved.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,230px),1fr));gap:16px">${saved.map((x) => `
+          <article style="display:flex;flex-direction:column;gap:10px">
+            <a href="${productUrl(x)}" style="display:block;aspect-ratio:3/4;border-radius:14px;overflow:hidden"><img src="${esc(x.image)}" alt="${esc(x.name)}" style="width:100%;height:100%;object-fit:cover;object-position:${esc(x.image_position || 'center')}"></a>
+            <a href="${productUrl(x)}" style="font-weight:600;text-decoration:none;color:#1D1D1F">${esc(x.name)}</a>
+            <span style="color:#8A1F35;font-weight:600">${naira(x.price_ngn)}</span>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" data-addsaved="${esc(x.slug)}" ${x.stock <= 0 ? 'disabled' : ''} style="flex:1;min-height:44px;padding:0 16px;border-radius:980px;border:none;background:#6E1A2C;color:#FFFFFF;font:inherit;font-weight:600;cursor:pointer">${x.stock <= 0 ? 'Sold out' : 'Add to bag'}</button>
+              <button type="button" data-wish="${esc(x.slug)}" data-name="${esc(x.name)}" style="min-height:44px;padding:0 16px;border-radius:980px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F;font:inherit;font-weight:600;cursor:pointer">Remove</button>
+            </div></article>`).join('')}</div>`
+        : '<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">Tap the heart on any wig to save it here.</p><a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Browse wigs</a>'}`;
+      $$('[data-addsaved]', sec).forEach((b) => b.addEventListener('click', () => {
+        const x = products.find((y) => y.slug === b.dataset.addsaved);
+        if (x) { cart.add(x, defaultOptions(x)); toast(`${x.name} added to your bag`); }
+      }));
+      // the Remove buttons are wishlist toggles; keep their text instead of a heart
+      $$('[data-wish]', sec).forEach((b) => { b.setAttribute('aria-label', `Remove ${b.dataset.name} from saved looks`); });
+    };
+    draw();
+    if (!sec._listening) { document.addEventListener('dh-wishlist-changed', draw); sec._listening = true; }
+  }
+
+  function afterAccountRender() {
+    if (location.hash) {
+      const t = document.getElementById(location.hash.slice(1));
+      if (t && !t.hidden) setTimeout(() => t.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }), 60);
+    }
   }
 
   /* ---------- newsletter + contact ---------- */
@@ -1543,8 +1681,10 @@
         initMenu();
         updateBagBadge();
         initForms();
+        const syncing = wl.sync().catch(() => {});
         try {
           if (!db) return;
+          await syncing;
           if (page === 'checkout') return await initCheckout();
           if (page === 'order-confirmed') return await initConfirmed();
           if (page === 'account') return await initAccountPage();
@@ -1554,6 +1694,7 @@
           if (['home', 'shop'].includes(page)) return renderProductGrids(products);
           return;
         } finally {
+          paintWish();
           initMotion();
         }
       }
