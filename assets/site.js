@@ -854,27 +854,25 @@
       password: '<rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path>',
       signout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"></path><path d="M10 16l-4-4 4-4"></path><path d="M6 12h10"></path>',
     };
-    const tile = (key, label, href) => `<${href ? `a href="${href}"` : 'button type="button" data-signout-tile'} class="dh-hover" style="flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:88px;padding:14px 12px;border-radius:18px;background:rgba(255,255,255,.75);border:1px solid rgba(0,0,0,.07);text-decoration:none;color:#1D1D1F;font:inherit;font-size:13px;font-weight:600;cursor:pointer">
-        <span style="width:46px;height:46px;border-radius:980px;background:#F6E3E1;color:#6E1A2C;display:flex;align-items:center;justify-content:center">${ico(ICONS[key])}</span>${label}</${href ? 'a' : 'button'}>`;
+    const tile = (key, label, href) => `<${href ? `a href="${href}"` : 'button type="button" data-signout-tile'} class="dh-seg" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 14px;border:none;border-radius:980px;background:transparent;text-decoration:none;color:#1D1D1F;font:inherit;font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap">${ico(ICONS[key])}<span>${label}</span></${href ? 'a' : 'button'}>`;
     box.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:6px">
         <p style="margin:0;font-size:17px;font-weight:600;color:#8A1F35">My account</p>
         <h1 style="margin:0;font-size:48px;line-height:1.08;font-weight:700;letter-spacing:-0.025em">${first ? 'Hi, ' + esc(first) : 'Welcome'}</h1>
         <p style="margin:4px 0 0;color:#6E6E73;font-size:16px;overflow-wrap:anywhere">${esc(session.user.email)}</p>
       </div>
-      <nav aria-label="Account sections" class="dh-icon-row" style="display:flex;gap:12px;overflow-x:auto;padding:4px 2px 10px;scrollbar-width:none">
+      <nav aria-label="Account sections" class="dh-icon-row" style="display:flex;gap:4px;padding:5px;border-radius:980px;background:rgba(0,0,0,.05);max-width:760px">
         ${tile('orders', 'Orders', '#account-orders')}${tile('saved', 'Saved', '#saved')}${tile('details', 'Details', '#account-details')}${tile('password', 'Password', '#account-password')}${tile('signout', 'Sign out')}
       </nav>
-      <section id="saved" class="glass-light" aria-labelledby="saved-h" style="${CARD}"></section>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:24px;align-items:start;padding-top:8px">
         <section id="account-orders" class="glass-light" aria-labelledby="orders-h" style="${CARD}">
-          <h2 id="orders-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Your orders</h2>
+          <h2 id="orders-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Your orders</h2>
           ${orders.length ? orders.map(orderRow).join('') : `<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">No orders yet. Orders you place while signed in show up here.</p>
             <a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Shop wigs</a>`}
         </section>
-        <div style="display:flex;flex-direction:column;gap:24px">
+      <section id="saved" class="glass-light" aria-labelledby="saved-h" style="${CARD}"></section>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:24px;align-items:start">
           <form id="account-details" class="glass-light" data-profile aria-labelledby="details-h" style="${CARD}">
-            <h2 id="details-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Your details</h2>
+            <h2 id="details-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Your details</h2>
             <p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">We use these to fill in checkout for you.</p>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
               ${input('first_name', 'First name', 'text', `autocomplete="given-name" required value="${esc(p.first_name || '')}"`)}
@@ -891,11 +889,10 @@
             <button type="submit" style="${BTN}">Save details</button>
           </form>
           <form id="account-password" class="glass-light" data-password aria-labelledby="pw-h" style="${CARD}">
-            <h2 id="pw-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Password</h2>
+            <h2 id="pw-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Password</h2>
             ${input('password', 'New password <span style="color:#6E6E73;font-weight:400">at least 8 characters</span>', 'password', 'autocomplete="new-password" minlength="8" required')}
             <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" style="${BTN2}">Change password</button><button type="button" data-signout style="${BTN2}">Sign out</button></div>
           </form>
-        </div>
       </div>`;
     const pf = $('[data-profile]', box);
     pf.addEventListener('submit', async (e) => {
@@ -944,25 +941,24 @@
       sec.hidden = false;
       sec.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <h2 id="saved-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Saved looks</h2>
+          <h2 id="saved-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Saved looks</h2>
           <span style="color:#6E6E73;font-size:15px">${saved.length} saved</span></div>
         ${signedIn ? '' : '<p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">Saved on this device. Sign in or create an account to keep them everywhere.</p>'}
         ${saved.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,230px),1fr));gap:16px">${saved.map((x) => `
-          <article style="display:flex;flex-direction:column;gap:10px">
-            <a href="${productUrl(x)}" style="display:block;aspect-ratio:3/4;border-radius:14px;overflow:hidden"><img src="${esc(x.image)}" alt="${esc(x.name)}" style="width:100%;height:100%;object-fit:cover;object-position:${esc(x.image_position || 'center')}"></a>
-            <a href="${productUrl(x)}" style="font-weight:600;text-decoration:none;color:#1D1D1F">${esc(x.name)}</a>
-            <span style="color:#8A1F35;font-weight:600">${naira(x.price_ngn)}</span>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button type="button" data-addsaved="${esc(x.slug)}" ${x.stock <= 0 ? 'disabled' : ''} style="flex:1;min-height:44px;padding:0 16px;border-radius:980px;border:none;background:#6E1A2C;color:#FFFFFF;font:inherit;font-weight:600;cursor:pointer">${x.stock <= 0 ? 'Sold out' : 'Add to bag'}</button>
-              <button type="button" data-wish="${esc(x.slug)}" data-name="${esc(x.name)}" style="min-height:44px;padding:0 16px;border-radius:980px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F;font:inherit;font-weight:600;cursor:pointer">Remove</button>
-            </div></article>`).join('')}</div>`
+          <article class="lift" style="position:relative;display:flex;flex-direction:column;gap:12px">
+            <a href="${productUrl(x)}" class="zoom" style="display:block;aspect-ratio:3/4;border-radius:14px;overflow:hidden;border:1px solid rgba(0,0,0,.08)"><img src="${esc(x.image)}" alt="${esc(x.name)}" style="display:block;width:100%;height:100%;object-fit:cover;object-position:${esc(x.image_position || 'center')}"></a>
+            <button type="button" class="glass-chip-light" data-wish="${esc(x.slug)}" data-name="${esc(x.name)}" style="position:absolute;top:10px;right:10px;width:44px;height:44px;border-radius:980px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"></path></svg></button>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+              <a href="${productUrl(x)}" style="font-size:19px;font-weight:600;letter-spacing:-0.012em;text-decoration:none;color:#1D1D1F">${esc(x.name)}</a>
+              <span style="font-size:17px;color:#8A1F35;white-space:nowrap">${naira(x.price_ngn)}</span></div>
+            <button type="button" data-addsaved="${esc(x.slug)}" ${x.stock <= 0 ? 'disabled' : ''} class="press" style="min-height:50px;border-radius:980px;background:transparent;color:#1D1D1F;border:1px solid rgba(0,0,0,.16);font:inherit;font-size:15px;font-weight:600;cursor:pointer">${x.stock <= 0 ? 'Sold out' : 'Add to bag'}</button>
+          </article>`).join('')}</div>`
         : '<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">Tap the heart on any wig to save it here.</p><a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Browse wigs</a>'}`;
       $$('[data-addsaved]', sec).forEach((b) => b.addEventListener('click', () => {
         const x = products.find((y) => y.slug === b.dataset.addsaved);
         if (x) { cart.add(x, defaultOptions(x)); toast(`${x.name} added to your bag`); }
       }));
-      // the Remove buttons are wishlist toggles; keep their text instead of a heart
-      $$('[data-wish]', sec).forEach((b) => { b.setAttribute('aria-label', `Remove ${b.dataset.name} from saved looks`); });
+      paintWish();
     };
     draw();
     if (!sec._listening) { document.addEventListener('dh-wishlist-changed', draw); sec._listening = true; }
