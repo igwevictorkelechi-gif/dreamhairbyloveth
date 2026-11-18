@@ -112,14 +112,14 @@
       const on = wl.has(b.dataset.wish);
       const name = b.dataset.name || 'this wig';
       b.setAttribute('aria-pressed', String(on));
-      b.setAttribute('aria-label', on ? `Remove ${name} from saved looks` : `Save ${name}`);
+      b.setAttribute('aria-label', on ? `Remove ${name} from your wishlist` : `Add ${name} to your wishlist`);
       const svg = $('svg', b);
       if (svg) svg.style.fill = on ? 'currentColor' : 'none';
       b.style.color = on ? '#8A1F35' : '';
     });
     const n = wl.slugs.size;
     $$('header button[aria-label^="Wishlist"], header button[aria-label^="Saved looks"]').forEach((b) => {
-      b.setAttribute('aria-label', n ? `Saved looks, ${n}` : 'Saved looks');
+      b.setAttribute('aria-label', n ? `Wishlist, ${n}` : 'Wishlist');
       const svg = $('svg', b);
       if (svg) svg.style.fill = n ? 'currentColor' : 'none';
     });
@@ -130,7 +130,7 @@
     e.preventDefault();
     e.stopPropagation();
     const on = await wl.toggle(b.dataset.wish);
-    toast(on ? `${b.dataset.name || 'Saved'} — saved to your looks` : 'Removed from your saved looks');
+    toast(on ? `${b.dataset.name || 'Saved'} added to your wishlist` : 'Removed from your wishlist');
     if (page === 'account') document.dispatchEvent(new CustomEvent('dh-wishlist-changed'));
   });
 
@@ -156,7 +156,7 @@
     const heart = $('button[aria-label="Wishlist"]', header);
     if (heart) { stripClick(heart); heart.addEventListener('click', () => { location.href = '/account#saved'; }); }
     const tmpl = $('a', nav);
-    [['Saved looks', '/account#saved'], ['My account', '/account']].forEach(([label, href]) => {
+    [['Wishlist', '/account#saved'], ['My account', '/account']].forEach(([label, href]) => {
       if ($$('a', nav).some((a) => text(a) === label)) return;
       const a = document.createElement('a');
       a.href = href;
@@ -850,6 +850,7 @@
     const ICONS = {
       orders: '<path d="M5 8h14l-1.5 12h-11z"></path><path d="M9 8V6a3 3 0 0 1 6 0v2"></path>',
       saved: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"></path>',
+      address: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"></path><circle cx="12" cy="9.5" r="2.5"></circle>',
       details: '<circle cx="12" cy="8" r="4"></circle><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"></path>',
       password: '<rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path>',
       signout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"></path><path d="M10 16l-4-4 4-4"></path><path d="M6 12h10"></path>',
@@ -862,7 +863,7 @@
         <p style="margin:4px 0 0;color:#6E6E73;font-size:16px;overflow-wrap:anywhere">${esc(session.user.email)}</p>
       </div>
       <nav aria-label="Account sections" class="dh-icon-row" style="display:flex;gap:4px;padding:5px;border-radius:980px;background:rgba(0,0,0,.05);max-width:760px">
-        ${tile('orders', 'Orders', '#account-orders')}${tile('saved', 'Saved', '#saved')}${tile('details', 'Details', '#account-details')}${tile('password', 'Password', '#account-password')}${tile('signout', 'Sign out')}
+        ${tile('orders', 'Orders', '#account-orders')}${tile('saved', 'Wishlist', '#saved')}${tile('address', 'Address', '#account-address')}${tile('details', 'Details', '#account-details')}${tile('signout', 'Sign out')}
       </nav>
         <section id="account-orders" class="glass-light" aria-labelledby="orders-h" style="${CARD}">
           <h2 id="orders-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Your orders</h2>
@@ -871,20 +872,25 @@
         </section>
       <section id="saved" class="glass-light" aria-labelledby="saved-h" style="${CARD}"></section>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:24px;align-items:start">
-          <form id="account-details" class="glass-light" data-profile aria-labelledby="details-h" style="${CARD}">
-            <h2 id="details-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Your details</h2>
-            <p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">We use these to fill in checkout for you.</p>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
-              ${input('first_name', 'First name', 'text', `autocomplete="given-name" required value="${esc(p.first_name || '')}"`)}
-              ${input('last_name', 'Last name', 'text', `autocomplete="family-name" required value="${esc(p.last_name || '')}"`)}
-            </div>
-            ${input('phone', 'Phone (WhatsApp)', 'tel', `autocomplete="tel" value="${esc(p.phone || '')}"`)}
-            ${input('address', 'Address', 'text', `autocomplete="address-line1" value="${esc(p.address || '')}"`)}
+          <form id="account-address" class="glass-light" data-profile aria-labelledby="addr-h" style="${CARD}">
+            <h2 id="addr-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Delivery address</h2>
+            <p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">${p.address ? 'Where we send your orders. Checkout fills this in for you.' : 'No address yet. Add one and checkout fills it in for you.'}</p>
+            ${input('address', 'Street address', 'text', `autocomplete="address-line1" value="${esc(p.address || '')}"`)}
             ${input('address2', 'Apartment, suite (optional)', 'text', `autocomplete="address-line2" value="${esc(p.address2 || '')}"`)}
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
               ${input('city', 'City', 'text', `autocomplete="address-level2" value="${esc(p.city || '')}"`)}
               <label style="${L}">State<select name="state" autocomplete="address-level1" style="${F}"><option value="">Select state</option>${states}</select></label>
             </div>
+            <button type="submit" style="${BTN}">Save address</button>
+          </form>
+          <div style="display:flex;flex-direction:column;gap:24px">
+          <form id="account-details" class="glass-light" data-profile aria-labelledby="details-h" style="${CARD}">
+            <h2 id="details-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Your details</h2>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
+              ${input('first_name', 'First name', 'text', `autocomplete="given-name" required value="${esc(p.first_name || '')}"`)}
+              ${input('last_name', 'Last name', 'text', `autocomplete="family-name" required value="${esc(p.last_name || '')}"`)}
+            </div>
+            ${input('phone', 'Phone (WhatsApp)', 'tel', `autocomplete="tel" value="${esc(p.phone || '')}"`)}
             <label style="display:flex;gap:10px;align-items:center;font-size:15px;cursor:pointer"><input type="checkbox" name="marketing_opt_in" ${p.marketing_opt_in ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">Email me first looks and offers</label>
             <button type="submit" style="${BTN}">Save details</button>
           </form>
@@ -893,26 +899,27 @@
             ${input('password', 'New password <span style="color:#6E6E73;font-weight:400">at least 8 characters</span>', 'password', 'autocomplete="new-password" minlength="8" required')}
             <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" style="${BTN2}">Change password</button><button type="button" data-signout style="${BTN2}">Sign out</button></div>
           </form>
+          </div>
       </div>`;
-    const pf = $('[data-profile]', box);
-    pf.addEventListener('submit', async (e) => {
+    const forms = $$('[data-profile]', box);
+    const val = (n) => { const el = $(`[name="${n}"]`, box); return el ? el.value.trim() : ''; };
+    forms.forEach((pf) => pf.addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = $('button[type=submit]', pf);
       showError(btn, '');
-      for (const el of $$('input[required]', pf)) if (!el.checkValidity()) { el.reportValidity(); return; }
-      const fd = Object.fromEntries(new FormData(pf));
+      for (const el of forms.flatMap((f) => $$('input[required]', f))) if (!el.checkValidity()) { el.reportValidity(); return; }
       const row = {
-        user_id: uid, first_name: fd.first_name.trim(), last_name: fd.last_name.trim(), phone: fd.phone.trim() || null,
-        address: fd.address.trim() || null, address2: fd.address2.trim() || null, city: fd.city.trim() || null, state: fd.state || null,
-        marketing_opt_in: fd.marketing_opt_in === 'on', updated_at: new Date().toISOString(),
+        user_id: uid, first_name: val('first_name'), last_name: val('last_name'), phone: val('phone') || null,
+        address: val('address') || null, address2: val('address2') || null, city: val('city') || null, state: val('state') || null,
+        marketing_opt_in: !!$('[name="marketing_opt_in"]', box).checked, updated_at: new Date().toISOString(),
       };
       btn.classList.add('dh-busy');
       const { error } = await db.from('customer_profiles').upsert(row);
       btn.classList.remove('dh-busy');
-      if (error) { showError(btn, 'Couldn’t save your details. Please try again.'); return; }
-      toast('Your details are saved');
+      if (error) { showError(btn, 'Couldn’t save. Please try again.'); return; }
+      toast(pf.id === 'account-address' ? 'Your delivery address is saved' : 'Your details are saved');
       const h = $('h1', box); if (h) h.textContent = 'Hi, ' + row.first_name;
-    });
+    }));
     const pw = $('[data-password]', box);
     pw.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -941,8 +948,8 @@
       sec.hidden = false;
       sec.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
-          <h2 id="saved-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Saved looks</h2>
-          <span style="color:#6E6E73;font-size:15px">${saved.length} saved</span></div>
+          <h2 id="saved-h" style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.015em">Wishlist</h2>
+          <span style="color:#6E6E73;font-size:15px">${saved.length} ${saved.length === 1 ? 'item' : 'items'}</span></div>
         ${signedIn ? '' : '<p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">Saved on this device. Sign in or create an account to keep them everywhere.</p>'}
         ${saved.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,230px),1fr));gap:16px">${saved.map((x) => `
           <article class="lift" style="position:relative;display:flex;flex-direction:column;gap:12px">
@@ -953,7 +960,7 @@
               <span style="font-size:17px;color:#8A1F35;white-space:nowrap">${naira(x.price_ngn)}</span></div>
             <button type="button" data-addsaved="${esc(x.slug)}" ${x.stock <= 0 ? 'disabled' : ''} class="press" style="min-height:50px;border-radius:980px;background:transparent;color:#1D1D1F;border:1px solid rgba(0,0,0,.16);font:inherit;font-size:15px;font-weight:600;cursor:pointer">${x.stock <= 0 ? 'Sold out' : 'Add to bag'}</button>
           </article>`).join('')}</div>`
-        : '<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">Tap the heart on any wig to save it here.</p><a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Browse wigs</a>'}`;
+        : '<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">Your wishlist is empty. Tap the heart on any wig to add it here.</p><a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Browse wigs</a>'}`;
       $$('[data-addsaved]', sec).forEach((b) => b.addEventListener('click', () => {
         const x = products.find((y) => y.slug === b.dataset.addsaved);
         if (x) { cart.add(x, defaultOptions(x)); toast(`${x.name} added to your bag`); }
