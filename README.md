@@ -18,6 +18,7 @@ type, sentence case, a white storefront and glass materials, shared in
 | `/bag` | The bag is kept in the shopper's browser; change quantities or remove items |
 | `/checkout` | Places a real order through the `place_order` database function (bank transfer or pay on pick-up; card payments are not connected yet) |
 | `/order-confirmed` | Shows the order that was just placed |
+| `/account` | Customers create an account or sign in, keep their details and address, see all their orders, change their password |
 | `/help` | Contact form saves to `messages` |
 | Homepage "Join the family" | Saves to `subscribers` |
 | `/admin/login` | Staff sign in (Supabase Auth, email + password) |
@@ -55,6 +56,19 @@ customers, messages and subscribers.
 Admin → Products lets you change price, stock and visibility. To add a new
 product, add a row to `products` in the Supabase table editor and put its photo
 in `images/`.
+
+## Customer accounts
+
+Sign-up goes through the `customer-signup` edge function, which creates a
+ready-to-use account (no confirmation email is needed, because Supabase's
+built-in mailer is not set up for this project) and the customer's profile in
+`customer_profiles`. It allows 5 new accounts per network per hour. Orders
+placed while signed in are linked by user id (`orders.user_id`), never by email,
+so an account only ever shows its own orders. Checkout fills itself in from the
+profile and remembers the first delivery address.
+
+Forgotten passwords: until email is connected, staff can set a new one in the
+Supabase dashboard (Authentication → Users).
 
 ## Payments: CheqPay
 

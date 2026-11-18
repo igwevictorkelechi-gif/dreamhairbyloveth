@@ -390,6 +390,22 @@
     const auto = { email: 'email', phone: 'tel', first_name: 'given-name', last_name: 'family-name', address: 'address-line1', address2: 'address-line2', city: 'address-level2', state: 'address-level1' };
     Object.entries(auto).forEach(([k, a]) => { if (f[k]) { f[k].autocomplete = a; f[k].name = k; if (k !== 'address2') f[k].required = true; } });
     if (f.state) f.state.innerHTML = '<option value="">Select state</option>' + STATES.map((s) => `<option>${s}</option>`).join('');
+    const { data: { session } } = await db.auth.getSession();
+    let profile = null;
+    if (session) {
+      ({ data: profile } = await db.from('customer_profiles').select('*').eq('user_id', session.user.id).maybeSingle());
+      const fill = { email: session.user.email, phone: profile && profile.phone, first_name: profile && profile.first_name, last_name: profile && profile.last_name,
+        address: profile && profile.address, address2: profile && profile.address2, city: profile && profile.city, state: profile && profile.state };
+      Object.entries(fill).forEach(([k, v]) => { if (f[k] && v && !f[k].value) f[k].value = v; });
+    } else {
+      const contact = $$('section.glass-light').find((x) => /Contact/.test(text($('h2', x))));
+      if (contact) {
+        const hint = document.createElement('p');
+        hint.style.cssText = 'margin:0;font-size:14px;color:#6E6E73';
+        hint.innerHTML = 'Have an account? <a href="/account?next=/checkout" style="color:#6E1A2C">Sign in</a> to fill this in for you.';
+        $('h2', contact).insertAdjacentElement('afterend', hint);
+      }
+    }
 
     const items = cart.get();
     const payBtn = stripClick($$('button').find((b) => /^pay/i.test(text(b))));
@@ -505,6 +521,12 @@
         return;
       }
       try { sessionStorage.setItem('dh-last-order', JSON.stringify(data)); } catch { /* ignore */ }
+      if (session && (!profile || !profile.address)) {
+        await db.from('customer_profiles').upsert({
+          user_id: session.user.id, first_name: customer.first_name, last_name: customer.last_name, phone: customer.phone,
+          address: customer.address, address2: customer.address2 || null, city: customer.city, state: customer.state, updated_at: new Date().toISOString(),
+        }).then(() => {}, () => {});
+      }
       cart.set([]);
       location.href = '/order-confirmed?order=' + encodeURIComponent(data.number) + '&t=' + encodeURIComponent(data.token);
     });
@@ -524,6 +546,19 @@
       live = data;
     }
     if (live && o) Object.assign(o, { payment_status: live.payment_status, bank: live.bank || o.bank, pay_amount_kobo: live.pay_amount_kobo });
+    if (!o && db && number) {
+      const { data: row } = await db.from('orders').select('*, order_items(*), delivery_options(name)').eq('number', number).maybeSingle();
+      if (row) {
+        o = {
+          number: row.number, token: row.access_token, first_name: row.first_name, email: row.email,
+          address: [row.address, row.address2, row.city, row.state].filter(Boolean).join(', '),
+          delivery: (row.delivery_options && row.delivery_options.name) || row.delivery_code, delivery_fee_ngn: row.delivery_fee_ngn,
+          payment_method: row.payment_method, payment_provider: row.payment_provider, payment_status: row.payment_status,
+          pay_amount_kobo: row.pay_amount_kobo, bank: live && live.bank, subtotal_ngn: row.subtotal_ngn, total_ngn: row.total_ngn,
+          created_at: row.created_at, items: row.order_items,
+        };
+      }
+    }
     const thanks = startsWith('span', 'Thank you');
     const h1 = $('h1');
     if (!o) {
@@ -623,6 +658,182 @@
       setTimeout(poll, document.hidden ? 15000 : 5000);
     };
     setTimeout(poll, 5000);
+  }
+
+  /* ---------- customer account ---------- */
+  const F = 'width:100%;box-sizing:border-box;min-height:48px;padding:0 14px;border-radius:12px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;font:inherit;font-size:16px;color:#1D1D1F';
+  const L = 'display:flex;flex-direction:column;gap:6px;font-size:14px;font-weight:500;color:#1D1D1F';
+  const BTN = 'min-height:48px;padding:0 24px;border-radius:980px;border:none;background:#6E1A2C;color:#FFFFFF;font:inherit;font-size:16px;font-weight:600;cursor:pointer';
+  const BTN2 = 'min-height:48px;padding:0 22px;border-radius:980px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F;font:inherit;font-size:16px;font-weight:600;cursor:pointer';
+  const CARD = 'border-radius:20px;padding:28px;box-sizing:border-box;display:flex;flex-direction:column;gap:16px';
+  const input = (name, label, type = 'text', extra = '') => `<label style="${L}">${label}<input name="${name}" type="${type}" ${extra} style="${F}"></label>`;
+
+  function accountShell() {
+    const header = $('header');
+    const root = header && header.parentElement;
+    const footer = root && $(':scope > footer', root);
+    if (!root || !footer) return null;
+    let n = header.nextElementSibling;
+    while (n && n !== footer) { const next = n.nextElementSibling; n.remove(); n = next; }
+    const sec = document.createElement('section');
+    sec.innerHTML = `<div style="max-width:1200px;margin:0 auto;padding:40px 40px 96px;display:flex;flex-direction:column;gap:28px">
+      <nav aria-label="Breadcrumb" style="display:flex;gap:10px;font-size:15px;color:#6E6E73"><a href="/" style="text-decoration:none;color:#6E6E73">Home</a><span aria-hidden="true">/</span><span aria-current="page" style="color:#1D1D1F">My account</span></nav>
+      <div data-account></div></div>`;
+    footer.insertAdjacentElement('beforebegin', sec);
+    return $('[data-account]', sec);
+  }
+
+  async function initAccountPage() {
+    const box = accountShell();
+    if (!box) return;
+    const { data: { session } } = await db.auth.getSession();
+    if (session) renderSignedIn(box, session); else renderSignedOut(box, new URLSearchParams(location.search).get('mode') === 'create' ? 'create' : 'signin');
+  }
+
+  function renderSignedOut(box, mode) {
+    const seg = (m, label) => `<button type="button" role="tab" aria-selected="${mode === m}" data-mode="${m}" style="flex:1;min-height:40px;border:none;border-radius:980px;font:inherit;font-size:15px;font-weight:600;cursor:pointer;${mode === m ? 'background:#FFFFFF;color:#1D1D1F;box-shadow:0 1px 3px rgba(0,0,0,.12)' : 'background:transparent;color:#6E6E73'}">${label}</button>`;
+    box.innerHTML = `
+      <div style="max-width:520px;display:flex;flex-direction:column;gap:22px">
+        <div><p style="margin:0;font-size:17px;font-weight:600;color:#8A1F35">${mode === 'create' ? 'Join the family' : 'Welcome back'}</p>
+        <h1 style="margin:6px 0 0;font-size:48px;line-height:1.08;font-weight:700;letter-spacing:-0.025em">${mode === 'create' ? 'Create your account' : 'Sign in'}</h1>
+        <p style="margin:10px 0 0;color:#6E6E73;font-size:17px;line-height:1.5">${mode === 'create' ? 'Save your details for faster checkout and see all your orders in one place.' : 'See your orders and check out faster with your saved details.'}</p></div>
+        <div role="tablist" aria-label="Account" style="display:flex;gap:4px;padding:4px;border-radius:980px;background:rgba(0,0,0,.05)">${seg('signin', 'Sign in')}${seg('create', 'Create account')}</div>
+        <form class="glass-light" data-form novalidate style="${CARD}">
+          ${mode === 'create' ? `
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
+              ${input('first_name', 'First name', 'text', 'autocomplete="given-name" required')}
+              ${input('last_name', 'Last name', 'text', 'autocomplete="family-name" required')}
+            </div>
+            ${input('email', 'Email', 'email', 'autocomplete="email" required')}
+            ${input('phone', 'Phone (WhatsApp) <span style="color:#6E6E73;font-weight:400">optional</span>', 'tel', 'autocomplete="tel" placeholder="+234 …"')}
+            ${input('password', 'Password <span style="color:#6E6E73;font-weight:400">at least 8 characters</span>', 'password', 'autocomplete="new-password" minlength="8" required')}
+            <label style="display:flex;gap:10px;align-items:flex-start;font-size:15px;line-height:1.4;cursor:pointer"><input type="checkbox" name="marketing_opt_in" style="accent-color:#6E1A2C;width:18px;height:18px;margin-top:2px">Email me first looks at new wigs and family-only offers</label>
+            <button type="submit" style="${BTN}">Create account</button>`
+          : `
+            ${input('email', 'Email', 'email', 'autocomplete="email" required')}
+            ${input('password', 'Password', 'password', 'autocomplete="current-password" required')}
+            <button type="submit" style="${BTN}">Sign in</button>
+            <p style="margin:0;font-size:14px;color:#6E6E73">Forgot your password? <a href="/help" style="color:#6E1A2C">Message us</a> and we'll reset it for you.</p>`}
+        </form>
+      </div>`;
+    $$('[data-mode]', box).forEach((b) => b.addEventListener('click', () => renderSignedOut(box, b.dataset.mode)));
+    const form = $('[data-form]', box);
+    const submit = $('button[type=submit]', form);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      showError(submit, '');
+      for (const el of $$('input[required]', form)) if (!el.checkValidity()) { el.reportValidity(); return; }
+      const fd = Object.fromEntries(new FormData(form));
+      submit.classList.add('dh-busy');
+      const label = submit.textContent;
+      submit.textContent = mode === 'create' ? 'Creating your account…' : 'Signing in…';
+      try {
+        if (mode === 'create') {
+          const { error } = await db.functions.invoke('customer-signup', { body: { ...fd, marketing_opt_in: fd.marketing_opt_in === 'on' } });
+          if (error) { let m = 'We couldn’t create your account. Please try again.'; try { m = (await error.context.json()).error || m; } catch { /* keep */ } throw new Error(m); }
+        }
+        const { data, error } = await db.auth.signInWithPassword({ email: String(fd.email).trim(), password: String(fd.password) });
+        if (error) throw new Error(error.message === 'Invalid login credentials' ? 'That email and password don’t match.' : error.message);
+        const next = new URLSearchParams(location.search).get('next');
+        if (next && next.startsWith('/') && !next.startsWith('//')) { location.href = next; return; }
+        toast(mode === 'create' ? 'Welcome to the family' : 'Signed in');
+        renderSignedIn(box, data.session);
+      } catch (err) {
+        submit.classList.remove('dh-busy');
+        submit.textContent = label;
+        showError(submit, err.message);
+      }
+    });
+  }
+
+  async function renderSignedIn(box, session) {
+    const uid = session.user.id;
+    const [{ data: profile }, { data: orders = [] }] = await Promise.all([
+      db.from('customer_profiles').select('*').eq('user_id', uid).maybeSingle(),
+      db.from('orders').select('number, created_at, total_ngn, pay_amount_kobo, payment_provider, payment_status, status, access_token, order_items(name, quantity, image)').eq('user_id', uid).order('created_at', { ascending: false }).limit(50),
+    ]);
+    const p = profile || {};
+    const first = p.first_name || (session.user.user_metadata || {}).first_name || '';
+    const states = STATES.map((st) => `<option${st === p.state ? ' selected' : ''}>${st}</option>`).join('');
+    const orderRow = (o) => {
+      const img = o.order_items && o.order_items[0] && o.order_items[0].image;
+      const count = (o.order_items || []).reduce((n, i) => n + i.quantity, 0);
+      return `<a href="/order-confirmed?order=${encodeURIComponent(o.number)}&t=${encodeURIComponent(o.access_token)}" class="dh-hover" style="display:flex;gap:14px;align-items:center;padding:14px;border-radius:16px;background:rgba(255,255,255,.7);border:1px solid rgba(0,0,0,.06);text-decoration:none;color:#1D1D1F">
+        ${img ? `<img src="${esc(img)}" alt="" style="width:56px;height:68px;border-radius:10px;object-fit:cover;flex:none">` : ''}
+        <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px"><span style="font-weight:600">#${esc(o.number)} · ${naira(o.total_ngn)}</span>
+        <span style="font-size:13px;color:#6E6E73">${fmtDate(o.created_at)} · ${count} item${count === 1 ? '' : 's'}</span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap">${pill(o.payment_status)}${pill(o.status)}</span></span>
+        <span aria-hidden="true" style="color:#6E6E73">›</span></a>`;
+    };
+    box.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <p style="margin:0;font-size:17px;font-weight:600;color:#8A1F35">My account</p>
+        <h1 style="margin:0;font-size:48px;line-height:1.08;font-weight:700;letter-spacing:-0.025em">${first ? 'Hi, ' + esc(first) : 'Welcome'}</h1>
+        <p style="margin:4px 0 0;color:#6E6E73;font-size:16px">${esc(session.user.email)}</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:24px;align-items:start;padding-top:8px">
+        <section class="glass-light" aria-labelledby="orders-h" style="${CARD}">
+          <h2 id="orders-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Your orders</h2>
+          ${orders.length ? orders.map(orderRow).join('') : `<p style="margin:0;color:#6E6E73;font-size:16px;line-height:1.5">No orders yet. Orders you place while signed in show up here.</p>
+            <a href="/shop" style="align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:980px;background:#6E1A2C;color:#FFFFFF;text-decoration:none;font-weight:600">Shop wigs</a>`}
+        </section>
+        <div style="display:flex;flex-direction:column;gap:24px">
+          <form class="glass-light" data-profile aria-labelledby="details-h" style="${CARD}">
+            <h2 id="details-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Your details</h2>
+            <p style="margin:-6px 0 0;color:#6E6E73;font-size:15px">We use these to fill in checkout for you.</p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
+              ${input('first_name', 'First name', 'text', `autocomplete="given-name" required value="${esc(p.first_name || '')}"`)}
+              ${input('last_name', 'Last name', 'text', `autocomplete="family-name" required value="${esc(p.last_name || '')}"`)}
+            </div>
+            ${input('phone', 'Phone (WhatsApp)', 'tel', `autocomplete="tel" value="${esc(p.phone || '')}"`)}
+            ${input('address', 'Address', 'text', `autocomplete="address-line1" value="${esc(p.address || '')}"`)}
+            ${input('address2', 'Apartment, suite (optional)', 'text', `autocomplete="address-line2" value="${esc(p.address2 || '')}"`)}
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:14px">
+              ${input('city', 'City', 'text', `autocomplete="address-level2" value="${esc(p.city || '')}"`)}
+              <label style="${L}">State<select name="state" autocomplete="address-level1" style="${F}"><option value="">Select state</option>${states}</select></label>
+            </div>
+            <label style="display:flex;gap:10px;align-items:center;font-size:15px;cursor:pointer"><input type="checkbox" name="marketing_opt_in" ${p.marketing_opt_in ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">Email me first looks and offers</label>
+            <button type="submit" style="${BTN}">Save details</button>
+          </form>
+          <form class="glass-light" data-password aria-labelledby="pw-h" style="${CARD}">
+            <h2 id="pw-h" style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em">Password</h2>
+            ${input('password', 'New password <span style="color:#6E6E73;font-weight:400">at least 8 characters</span>', 'password', 'autocomplete="new-password" minlength="8" required')}
+            <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" style="${BTN2}">Change password</button><button type="button" data-signout style="${BTN2}">Sign out</button></div>
+          </form>
+        </div>
+      </div>`;
+    const pf = $('[data-profile]', box);
+    pf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('button[type=submit]', pf);
+      showError(btn, '');
+      for (const el of $$('input[required]', pf)) if (!el.checkValidity()) { el.reportValidity(); return; }
+      const fd = Object.fromEntries(new FormData(pf));
+      const row = {
+        user_id: uid, first_name: fd.first_name.trim(), last_name: fd.last_name.trim(), phone: fd.phone.trim() || null,
+        address: fd.address.trim() || null, address2: fd.address2.trim() || null, city: fd.city.trim() || null, state: fd.state || null,
+        marketing_opt_in: fd.marketing_opt_in === 'on', updated_at: new Date().toISOString(),
+      };
+      btn.classList.add('dh-busy');
+      const { error } = await db.from('customer_profiles').upsert(row);
+      btn.classList.remove('dh-busy');
+      if (error) { showError(btn, 'Couldn’t save your details. Please try again.'); return; }
+      toast('Your details are saved');
+      const h = $('h1', box); if (h) h.textContent = 'Hi, ' + row.first_name;
+    });
+    const pw = $('[data-password]', box);
+    pw.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const field = $('input[name=password]', pw);
+      const btn = $('button[type=submit]', pw);
+      showError(btn.parentElement, '');
+      if (!field.checkValidity()) { field.reportValidity(); return; }
+      const { error } = await db.auth.updateUser({ password: field.value });
+      if (error) { showError(btn.parentElement, error.message); return; }
+      field.value = '';
+      toast('Password changed');
+    });
+    $('[data-signout]', box).addEventListener('click', async () => { await db.auth.signOut(); toast('Signed out'); renderSignedOut(box, 'signin'); });
   }
 
   /* ---------- newsletter + contact ---------- */
@@ -1336,6 +1547,7 @@
           if (!db) return;
           if (page === 'checkout') return await initCheckout();
           if (page === 'order-confirmed') return await initConfirmed();
+          if (page === 'account') return await initAccountPage();
           const products = await loadProducts();
           if (page === 'product') return initProductPage(products);
           if (page === 'bag') return initBagPage(products);
