@@ -24,6 +24,11 @@
   const fmtDate = (d) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   const fmtDateTime = (d) => new Date(d).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const productUrl = (p) => '/product?p=' + encodeURIComponent(p.slug);
+  const waLink = (phone) => 'https://wa.me/' + String(phone || '').replace(/\D/g, '').replace(/^0/, '234');
+  const priceFor = (p, length) => (length && p.length_prices && Number(p.length_prices[length]) > 0 ? Number(p.length_prices[length]) : p.price_ngn);
+  const minPrice = (p) => Math.min(p.price_ngn, ...Object.values(p.length_prices || {}).map(Number).filter((n) => n > 0));
+  const wasPrice = (p, now) => (p.compare_at_ngn && p.compare_at_ngn > now
+    ? ` <s style="color:#6E6E73;font-weight:400;font-size:.85em;margin-left:6px">${naira(p.compare_at_ngn)}</s>` : '');
   const stripClick = (el) => { if (el) { el.removeAttribute('onclick'); el.onclick = null; } return el; };
 
   function toast(msg) {
@@ -49,9 +54,10 @@
     set(items) { try { localStorage.setItem(CART_KEY, JSON.stringify(items)); } catch { /* private mode */ } updateBagBadge(); },
     add(p, options, qty = 1) {
       const items = cart.get();
+      const length = (p.lengths || []).find((L) => String(options || '').split(' · ').includes(L)) || null;
       const found = items.find((i) => i.slug === p.slug && i.options === options);
       if (found) found.quantity = Math.min(20, found.quantity + qty);
-      else items.push({ slug: p.slug, name: p.name, price: p.price_ngn, image: p.image, position: p.image_position, options, quantity: qty });
+      else items.push({ slug: p.slug, name: p.name, price: priceFor(p, length), length, image: p.image, position: p.image_position, options, quantity: qty });
       cart.set(items);
     },
     count() { return cart.get().reduce((n, i) => n + i.quantity, 0); },
@@ -201,7 +207,10 @@
     const title = $$('a', card).find((a) => !a.classList.contains('zoom'));
     if (title) { title.textContent = p.name; title.href = productUrl(p); }
     const price = leaf(card, /₦|\[PRICE\]/);
-    if (price) price.textContent = naira(p.price_ngn);
+    if (price) {
+      const lo = minPrice(p);
+      price.innerHTML = (lo < p.price_ngn || Object.keys(p.length_prices || {}).length ? 'From ' : '') + naira(lo) + wasPrice(p, lo);
+    }
     const sub = leaf(card, /\[LENGTH\]|·/);
     if (sub && sub !== price) sub.textContent = [p.style, p.laces[0]].filter(Boolean).join(' · ');
     const wish = $('button[aria-label^="Save"]', card);
@@ -258,6 +267,75 @@
     });
   }
 
+  /* ---------- content from Admin → Content (fills the [PLACEHOLDERS]) ---------- */
+  const TOKENS = {
+    'YOUR WHATSAPP NUMBER': 'whatsapp', 'YOUR NUMBER': 'whatsapp', 'YOUR EMAIL': 'email', 'INSTAGRAM HANDLE': 'instagram',
+    'YOUR OPENING HOURS': 'hours', 'DELIVERY TIME': 'delivery_time', 'YOUR PICKUP LOCATION': 'pickup', 'PAYMENT METHODS': 'payment_methods',
+    'YOUR DELIVERY TIMES AND AREAS': 'delivery_areas', 'YOUR DELIVERY AREAS & TIMES': 'delivery_areas', 'YOUR DELIVERY TIMES, AREAS AND RETURNS POLICY': 'delivery_returns',
+    'YOUR RETURNS POLICY': 'returns', 'HAIR TYPE / ORIGIN': 'hair_type', 'LACE DETAILS': 'lace_details', 'CAP SIZES': 'cap_sizes',
+    'YOUR WIG CARE TIPS': 'care_tips', 'YOUR WIG CARE TIPS — washing, styling, storing': 'care_tips',
+    'YOUR STORY — how Dream Hair by Loveth started, what inspired you and what makes your wigs special.': 'story',
+    'A SECOND PARAGRAPH — your promise to your customers.': 'promise',
+  };
+  async function loadContent() {
+    const KEY = 'dh-content-v1';
+    try { const c = JSON.parse(sessionStorage.getItem(KEY)); if (c && Date.now() - c.t < 5 * 60 * 1000) return c; } catch { /* ignore */ }
+    const [{ data: rows = [] }, { data: promos }] = await Promise.all([db.from('site_content').select('key, value'), db.rpc('store_promos')]);
+    const c = { t: Date.now(), v: Object.fromEntries((rows || []).map((r) => [r.key, r.value])), promos: promos || {} };
+    try { sessionStorage.setItem(KEY, JSON.stringify(c)); } catch { /* ignore */ }
+    return c;
+  }
+  async function applyContent() {
+    if (!db) return;
+    let c;
+    try { c = await loadContent(); } catch { return; }
+    const v = { ...c.v };
+    v.delivery_returns = [v.delivery_areas, v.returns].filter(Boolean).join('\n\n');
+    const free = c.promos.free_delivery_over_ngn;
+    const feat = c.promos.featured;
+    const featLabel = feat ? (feat.kind === 'percent' ? `${feat.value}% off` : `${naira(feat.value)} off`) : '';
+    // the announcement bar and other promo lines
+    $$('span, p, div, a, strong').filter((e) => !e.children.length && /\[(AMOUNT|CODE)\]/.test(e.textContent)).forEach((e) => {
+      const t = e.textContent;
+      if (/\[AMOUNT\]/.test(t) && /\[CODE\]/.test(t)) {
+        const parts = [];
+        if (free != null) parts.push(free ? `Free delivery on orders over ${naira(free)}` : 'Free delivery on every order');
+        if (feat) parts.push(`${featLabel} ${feat.first_order_only ? 'your first wig' : 'your order'} with code ${feat.code}`);
+        if (parts.length) e.textContent = parts.join(' · ');
+        else { const bar = e.closest('div'); (bar && bar.parentElement === document.body.firstElementChild ? bar : e).hidden = true; e.hidden = true; }
+        return;
+      }
+      let out = t;
+      if (/\[AMOUNT\]/.test(out)) { if (free == null) { e.hidden = true; return; } out = out.replace(/\[AMOUNT\]/g, naira(free)); }
+      if (/\[CODE\]/.test(out)) {
+        if (!feat) { e.hidden = true; return; }
+        out = out.replace(/\[X\]% off/g, featLabel).replace(/\[X\]%?/g, String(feat.value)).replace(/\[CODE\]/g, feat.code);
+      }
+      e.textContent = out;
+    });
+    // text placeholders
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.nodeValue.includes('[') && !n.parentElement.closest('script, style, [data-admin-body]') ? 1 : 3) });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((n) => {
+      const t = n.nodeValue.replace(/\s*\[ADD YOUR PRODUCT DESCRIPTION\]/g, '').replace(/\[([^\]]{2,140})\]/g, (m, tok) => {
+        const key = TOKENS[tok.trim()];
+        const val = key && (v[key] || '').trim();
+        if (!val) return m;
+        return key === 'instagram' ? val.replace(/^@/, '') : val;
+      });
+      if (t !== n.nodeValue) {
+        n.nodeValue = t;
+        if (t.includes('\n')) n.parentElement.style.whiteSpace = 'pre-line';
+      }
+    });
+    // links
+    if (v.whatsapp) $$('a').filter((a) => /^WhatsApp/i.test(text(a)) || /wa\.me\/?$|^#$/.test(a.getAttribute('href') || '') && /WhatsApp/i.test(text(a))).forEach((a) => { if (!/wa\.me\/\d/.test(a.href)) { a.href = waLink(v.whatsapp); a.target = '_blank'; a.rel = 'noopener'; } });
+    if (v.instagram) $$('a').filter((a) => /instagram|^Follow @/i.test(text(a))).forEach((a) => { a.href = 'https://instagram.com/' + v.instagram.replace(/^@/, ''); a.target = '_blank'; a.rel = 'noopener'; });
+    if (v.tiktok) $$('a').filter((a) => /^TikTok$/i.test(text(a))).forEach((a) => { a.href = 'https://www.tiktok.com/@' + v.tiktok.replace(/^@/, ''); a.target = '_blank'; a.rel = 'noopener'; });
+    if (v.email) $$('a').filter((a) => text(a) === v.email).forEach((a) => { a.href = 'mailto:' + v.email; });
+  }
+
   /* ---------- product page ---------- */
   function initProductPage(products) {
     const slug = new URLSearchParams(location.search).get('p');
@@ -276,16 +354,19 @@
       eyebrow.hidden = !t;
     }
     const priceRow = h1.nextElementSibling;
+    const priceSpan = priceRow && $$('span', priceRow)[0];
+    const showPrice = (len) => { if (priceSpan) priceSpan.innerHTML = naira(priceFor(p, len)) + wasPrice(p, priceFor(p, len)); };
     if (priceRow) {
       const spans = $$('span', priceRow);
-      if (spans[0]) spans[0].textContent = naira(p.price_ngn);
-      if (spans[1]) spans[1].textContent = 'SKU ' + p.slug.toUpperCase();
+      showPrice(null);
+      if (spans[1]) spans[1].textContent = 'SKU ' + (p.sku || p.slug).toUpperCase();
     }
     const desc = $$('p', info).find((x) => x.closest('div') === h1.closest('div').parentElement || x.parentElement === info);
     if (desc) desc.textContent = p.description || '';
-    $$('img[src^="/images/"]').filter((i) => !i.closest('article')).forEach((img) => {
-      if (img.closest('header, footer')) return;
-      img.src = p.image; img.alt = p.name; img.style.objectPosition = p.image_position || 'center';
+    const photos = [p.image, ...(p.images || [])].filter(Boolean);
+    $$('img[src^="/images/"]').filter((i) => !i.closest('article') && !i.closest('header, footer')).forEach((img, i) => {
+      img.src = photos[i % photos.length]; img.alt = i ? `${p.name}, photo ${(i % photos.length) + 1}` : p.name;
+      img.style.objectPosition = i % photos.length === 0 ? (p.image_position || 'center') : 'center';
     });
     const mainWish = $('button[aria-label="Save to wishlist"]');
     if (mainWish) { stripClick(mainWish); mainWish.dataset.wish = p.slug; mainWish.dataset.name = p.name; }
@@ -320,11 +401,13 @@
           selected[label] = v;
           if (valueEl) valueEl.textContent = v;
           $$('button', group).forEach((x) => x._sync());
+          if (label === 'Length') showPrice(v);
         });
         sync();
         group.appendChild(b);
       });
       if (valueEl) valueEl.textContent = selected[label];
+      if (label === 'Length') showPrice(selected[label]);
     });
     const options = () => ['Length', 'Lace', 'Density'].map((k) => selected[k]).filter(Boolean).join(' · ');
 
@@ -446,7 +529,58 @@
         btn.addEventListener('click', () => { cart.add(p, defaultOptions(p)); toast(`${p.name} added`); render(); box.hidden = true; });
       } else if (box) box.hidden = true;
     }
-    $$('button').filter((b) => text(b) === 'Apply').forEach((b) => b.addEventListener('click', () => toast('Discount codes are coming soon')));
+    $$('button').filter((b) => text(b) === 'Apply').forEach((b) => discountBox(b, () => cart.total(), () => '', (d) => {
+      let line = summary && $('.dh-disc-line', summary);
+      if (!line && summary && totalLabel) {
+        line = document.createElement('div');
+        line.className = 'dh-disc-line';
+        line.style.cssText = 'display:flex;justify-content:space-between;gap:12px;font-size:15px;color:#1E5B34';
+        totalLabel.parentElement.insertAdjacentElement('beforebegin', line);
+      }
+      if (line) { line.hidden = !d; if (d) line.innerHTML = `<span>Discount (${esc(d.code)})</span><span>−${naira(d.amount_ngn)}</span>`; }
+      if (totalLabel && totalLabel.nextElementSibling) totalLabel.nextElementSibling.textContent = naira(cart.total() - (d ? d.amount_ngn : 0));
+    }));
+  }
+
+  /* ---------- discount code box (bag and checkout) ---------- */
+  const DISC_KEY = 'dh-discount-v1';
+  function discountBox(btn, subtotal, email, onChange) {
+    const row = btn.parentElement;
+    const inp = row && $('input', row);
+    if (!inp) return null;
+    stripClick(btn);
+    inp.autocomplete = 'off'; inp.style.textTransform = 'uppercase';
+    let current = null;
+    const note = document.createElement('p');
+    note.setAttribute('role', 'status');
+    note.style.cssText = 'margin:6px 0 0;font-size:14px';
+    row.insertAdjacentElement('afterend', note);
+    const apply = async (code, quiet) => {
+      code = String(code || '').trim().toUpperCase();
+      if (!code) { current = null; note.textContent = ''; try { sessionStorage.removeItem(DISC_KEY); } catch { /* ignore */ } onChange(null); return; }
+      btn.classList.add('dh-busy');
+      const { data } = await db.rpc('check_discount', { p_code: code, p_subtotal: subtotal(), p_email: email() || null });
+      btn.classList.remove('dh-busy');
+      if (!data || !data.ok) {
+        current = null; onChange(null);
+        if (!quiet) { note.style.color = '#8A1F35'; note.textContent = (data && data.error) || 'That code isn’t valid'; }
+        else note.textContent = '';
+        try { sessionStorage.removeItem(DISC_KEY); } catch { /* ignore */ }
+        return;
+      }
+      current = data;
+      inp.value = data.code;
+      note.style.color = '#1E5B34';
+      note.textContent = `${data.label} applied — you save ${naira(data.amount_ngn)}`;
+      try { sessionStorage.setItem(DISC_KEY, data.code); } catch { /* ignore */ }
+      onChange(data);
+    };
+    btn.addEventListener('click', (e) => { e.preventDefault(); apply(inp.value); });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(inp.value); } });
+    let saved = null;
+    try { saved = sessionStorage.getItem(DISC_KEY); } catch { /* ignore */ }
+    if (saved) apply(saved, true);
+    return { get: () => current, recheck: () => current && apply(current.code, false) };
   }
 
   /* ---------- checkout ---------- */
@@ -554,18 +688,39 @@
     const value = (label) => { const l = summary && byText('span, div', label, summary); return l && l.nextElementSibling; };
     const subEl = value('Subtotal'), delEl = value('Delivery'), totEl = value('Total');
     const subtotal = cart.total();
+    const { data: store } = await db.from('store_settings').select('free_delivery_over_ngn').eq('id', 1).maybeSingle();
+    const freeOver = store && store.free_delivery_over_ngn != null ? store.free_delivery_over_ngn : null;
+    let disc = null;
+    let discLine = null;
     const refresh = () => {
       const opt = delivery.find((d) => d.code === (ship.find((r) => r.checked) || {}).value);
-      const fee = opt ? opt.fee_ngn : 0;
+      let fee = opt ? opt.fee_ngn : 0;
+      if (opt && opt.code === 'standard' && freeOver != null && subtotal >= freeOver) fee = 0;
+      const off = disc ? disc.amount_ngn : 0;
       if (subEl) subEl.textContent = naira(subtotal);
       if (delEl) delEl.textContent = fee ? naira(fee) : 'Free';
-      if (totEl) totEl.textContent = naira(subtotal + fee);
-      if (payBtn) payBtn.textContent = items.length ? `Place order · ${naira(subtotal + fee)}` : 'Your bag is empty';
+      if (totEl) {
+        if (!discLine && totEl.parentElement) {
+          discLine = document.createElement('div');
+          discLine.style.cssText = 'display:flex;justify-content:space-between;gap:12px;font-size:15px;color:#1E5B34';
+          totEl.parentElement.insertAdjacentElement('beforebegin', discLine);
+        }
+        if (discLine) { discLine.hidden = !off; discLine.innerHTML = off ? `<span>Discount (${esc(disc.code)})</span><span>−${naira(off)}</span>` : ''; }
+        totEl.textContent = naira(subtotal - off + fee);
+      }
+      if (payBtn) payBtn.textContent = items.length ? `Place order · ${naira(subtotal - off + fee)}` : 'Your bag is empty';
       syncPickup();
     };
     ship.forEach((r) => r.addEventListener('change', refresh));
+    if (freeOver != null) {
+      const std = ship.find((r) => r.value === 'standard');
+      const fee = std && leaf(std.closest('label'), /₦|^Free$/);
+      if (fee && subtotal >= freeOver) fee.textContent = 'Free';
+    }
     refresh();
-    $$('button').filter((b) => text(b) === 'Apply').forEach((b) => b.addEventListener('click', () => toast('Discount codes are coming soon')));
+    let discUi = null;
+    $$('button').filter((b) => text(b) === 'Apply').forEach((b) => { discUi = discountBox(b, () => subtotal, () => (f.email ? f.email.value : ''), (d) => { disc = d; refresh(); }) || discUi; });
+    if (f.email) f.email.addEventListener('change', () => { if (discUi) discUi.recheck(); });
 
     if (!payBtn) return;
     if (!items.length) { payBtn.disabled = true; payBtn.classList.add('dh-busy'); return; }
@@ -580,12 +735,13 @@
         delivery_code: (ship.find((r) => r.checked) || {}).value,
         payment_method: (pay.find((r) => r.checked && !r.disabled) || bank).value,
         marketing_opt_in: !!(f.marketing && f.marketing.checked),
+        discount_code: disc ? disc.code : null,
       };
       payBtn.classList.add('dh-busy');
       const label = payBtn.textContent;
       payBtn.textContent = 'Placing your order…';
       const { data, error } = await db.rpc('place_order', {
-        customer, items: cart.get().map((i) => ({ slug: i.slug, quantity: i.quantity, options: i.options })),
+        customer, items: cart.get().map((i) => ({ slug: i.slug, quantity: i.quantity, options: i.options, length: i.length || null })),
       });
       payBtn.classList.remove('dh-busy');
       if (error) {
@@ -601,6 +757,7 @@
         }).then(() => {}, () => {});
       }
       cart.set([]);
+      try { sessionStorage.removeItem(DISC_KEY); } catch { /* ignore */ }
       location.href = '/order-confirmed?order=' + encodeURIComponent(data.number) + '&t=' + encodeURIComponent(data.token);
     });
   }
@@ -628,6 +785,7 @@
           delivery: (row.delivery_options && row.delivery_options.name) || row.delivery_code, delivery_fee_ngn: row.delivery_fee_ngn,
           payment_method: row.payment_method, payment_provider: row.payment_provider, payment_status: row.payment_status,
           pay_amount_kobo: row.pay_amount_kobo, bank: live && live.bank, subtotal_ngn: row.subtotal_ngn, total_ngn: row.total_ngn,
+          discount_code: row.discount_code, discount_ngn: row.discount_ngn,
           created_at: row.created_at, items: row.order_items,
         };
       }
@@ -682,7 +840,8 @@
     }
     const totalPaid = byText('span', 'Total paid');
     if (totalPaid) {
-      totalPaid.textContent = o.delivery_fee_ngn ? `Total (incl. ${naira(o.delivery_fee_ngn)} delivery)` : 'Total';
+      const extras = [o.delivery_fee_ngn ? `${naira(o.delivery_fee_ngn)} delivery` : '', o.discount_ngn ? `${naira(o.discount_ngn)} off with ${o.discount_code}` : ''].filter(Boolean);
+      totalPaid.textContent = extras.length ? `Total (incl. ${extras.join(', ')})` : 'Total';
       if (totalPaid.nextElementSibling) totalPaid.nextElementSibling.textContent = naira(o.total_ngn);
     }
     $$('a').filter((a) => /track my order/i.test(text(a))).forEach((a) => { a.href = '/help'; a.firstChild.textContent = 'Questions about your order? '; });
@@ -1064,12 +1223,14 @@
   async function requireStaff() {
     const { data: { session } } = await db.auth.getSession();
     if (!session) { location.replace('/admin/login?next=' + encodeURIComponent(location.pathname)); return null; }
-    const { data: staff } = await db.from('staff').select('role').eq('user_id', session.user.id).maybeSingle();
-    if (!staff) {
+    const { data: staff } = await db.from('staff').select('role, access, status, full_name, email').eq('user_id', session.user.id).maybeSingle();
+    if (!staff || staff.status !== 'active') {
       await db.auth.signOut();
       location.replace('/admin/login?denied=1');
       return null;
     }
+    ME = staff;
+    db.rpc('touch_staff').then(() => {}, () => {});
     return { session, staff };
   }
 
@@ -1120,11 +1281,29 @@
         signOut.insertAdjacentElement('afterend', cp);
       }
     }
-    const who = user && user.session.user.email;
+    const who = user && (user.staff.full_name || (user.session.user.email || '').split('@')[0]);
     if (who) {
       const nameEl = leaf(aside || document, /^Loveth( Okafor)?$/);
-      if (nameEl) nameEl.textContent = who.split('@')[0];
+      if (nameEl) {
+        nameEl.textContent = who;
+        const roleEl = nameEl.nextElementSibling && !nameEl.nextElementSibling.children.length ? nameEl.nextElementSibling : leaf(nameEl.parentElement, /^(Owner|Manager|Staff)$/);
+        if (roleEl) roleEl.textContent = ROLE_NAMES[user.staff.access] || 'Staff';
+        const av = nameEl.closest('div') && nameEl.closest('div').parentElement && $$('span, div', nameEl.closest('div').parentElement).find((e) => !e.children.length && /^[A-Z]{1,2}$/.test(text(e)));
+        if (av) av.textContent = initials(who.split(' ')[0], who.split(' ')[1] || '');
+      }
     }
+    $$('aside a[href^="/admin"]').forEach((a) => {
+      const area = NAV_AREA[a.getAttribute('href')];
+      if (area && !canDo(area, false)) a.hidden = true;
+    });
+    $$('a[href="/admin/product-edit"]').forEach((a) => { if (!canDo('products')) a.hidden = true; });
+    const pageArea = PAGE_AREA[page];
+    if (pageArea && !canDo(pageArea, false)) {
+      const body = adminBody() || $('main > div:last-child');
+      if (body) body.innerHTML = noAccess();
+      document.body.dataset.denied = '1';
+    }
+    initInstallPrompt();
     const greet = byText('span, p', 'Good morning');
     if (greet) { const h = new Date().getHours(); greet.textContent = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; }
     hideDemoBits();
@@ -1345,8 +1524,10 @@
     let kpiGrid = kpiLabel;
     while (kpiGrid && kpiGrid.parentElement && getComputedStyle(kpiGrid.parentElement).display !== 'grid') kpiGrid = kpiGrid.parentElement;
     if (kpiGrid && kpiGrid.parentElement) kpiGrid.parentElement.style.gridTemplateColumns = 'repeat(auto-fit, minmax(200px, 1fr))';
-    await renderPaymentsCard();
-    await renderAlertsCard();
+    if (canDo('settings', false)) {
+      await renderPaymentsCard();
+      await renderAlertsCard();
+    }
 
     // revenue chart: one bar per day, last 30 days
     const revH = $$('h2').find((h) => text(h) === 'Revenue');
@@ -1428,15 +1609,15 @@
     }
   }
 
-  async function renderPaymentsCard() {
+  async function renderPaymentsCard(host) {
     const revH = $$('h2').find((h) => text(h) === 'Revenue');
     const ref = revH && revH.closest('.glass-light');
-    if (!ref) return;
+    if (!ref && !host) return;
     const card = document.createElement('section');
     card.className = 'glass-light';
-    card.setAttribute('style', ref.getAttribute('style') || '');
+    card.setAttribute('style', host ? UI.card : ref.getAttribute('style') || '');
     card.setAttribute('aria-labelledby', 'payments-title');
-    ref.insertAdjacentElement('beforebegin', card);
+    if (host) host.appendChild(card); else ref.insertAdjacentElement('beforebegin', card);
     const render = async (status, err) => {
       const { data: recent = [] } = await db.from('payments').select('*, orders(number)').order('created_at', { ascending: false }).limit(5);
       const s = status && status.settings;
@@ -1483,15 +1664,15 @@
     await render(data, data ? null : 'Couldn’t reach the payments service.');
   }
 
-  async function renderAlertsCard() {
+  async function renderAlertsCard(host) {
     const pay = $('#payments-title');
     const ref = pay && pay.closest('section');
-    if (!ref) return;
+    if (!ref && !host) return;
     const card = document.createElement('section');
     card.className = 'glass-light';
-    card.setAttribute('style', ref.getAttribute('style') || '');
+    card.setAttribute('style', host ? UI.card : ref.getAttribute('style') || '');
     card.setAttribute('aria-labelledby', 'alerts-title');
-    ref.insertAdjacentElement('afterend', card);
+    if (host) host.appendChild(card); else ref.insertAdjacentElement('afterend', card);
     const field = 'width:100%;box-sizing:border-box;min-height:44px;padding:0 14px;border-radius:12px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;font:inherit;font-size:15px;color:#1D1D1F';
     const btn = (primary) => `min-height:44px;padding:0 20px;border-radius:980px;font:inherit;font-weight:600;cursor:pointer;${primary ? 'border:none;background:#6E1A2C;color:#FFFFFF' : 'border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F'}`;
     const chip = (ok, label) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:980px;font-size:12px;font-weight:600;${ok ? 'background:#E3F1E7;color:#1E5B34' : 'background:#EFEFF1;color:#6E6E73'}">${ok ? '✓' : '•'} ${label}</span>`;
@@ -1623,7 +1804,7 @@
         && (!q || p.name.toLowerCase().includes(q)));
       const trs = fillTable(table, list.map((p) => [
         `<input type="checkbox" aria-label="Select ${esc(p.name)}" style="accent-color:#6E1A2C;width:16px;height:16px">`,
-        `<span style="display:flex;align-items:center;gap:12px"><img src="${esc(p.image)}" alt="" style="width:44px;height:52px;border-radius:10px;object-fit:cover;object-position:${esc(p.image_position || 'center')}"><span style="display:flex;flex-direction:column;gap:2px"><a href="${productUrl(p)}" target="_blank" rel="noopener" style="font-weight:600;text-decoration:none">${esc(p.name)}</a><span style="font-size:12px;color:#6E6E73">${esc(p.slug)}</span></span></span>`,
+        `<span style="display:flex;align-items:center;gap:12px"><img src="${esc(p.image)}" alt="" style="width:44px;height:52px;border-radius:10px;object-fit:cover;object-position:${esc(p.image_position || 'center')}"><span style="display:flex;flex-direction:column;gap:2px"><a href="/admin/product-edit?id=${p.id}" style="font-weight:600;text-decoration:none;color:#1D1D1F">${esc(p.name)}</a><span style="font-size:12px;color:#6E6E73">${esc(p.category || 'Wigs')} · <a href="${productUrl(p)}" target="_blank" rel="noopener" style="color:#6E6E73">view in shop</a></span></span></span>`,
         `<label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" data-f="active" ${p.active ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">${pill(p.stock <= 0 ? 'out' : p.active ? 'active' : 'draft')}</label>`,
         `<input type="number" min="0" step="1" data-f="stock" value="${p.stock}" aria-label="Stock for ${esc(p.name)}" style="${input}">`,
         `<input type="number" min="0" step="1000" data-f="price_ngn" value="${p.price_ngn}" aria-label="Price in naira for ${esc(p.name)}" style="${input};width:130px">`,
@@ -1678,6 +1859,921 @@
     render();
   }
 
+  /* ======================= marketing tools ======================= */
+  function loadScript(src) {
+    return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  }
+  async function downloadPng(node, name, pixelRatio = 1) {
+    if (!window.htmlToImage) await loadScript('/assets/vendor/html-to-image-1.11.11.js');
+    const zoomed = node.closest('.frame');
+    const z = zoomed && zoomed.style.zoom;
+    if (zoomed) zoomed.style.zoom = 1;
+    try {
+      const url = await window.htmlToImage.toPng(node, { pixelRatio, cacheBust: true });
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    } finally { if (zoomed) zoomed.style.zoom = z; }
+  }
+  function toolPanel(html) {
+    document.body.style.flexDirection = 'column';
+    document.body.style.alignItems = 'center';
+    document.body.style.gap = '24px';
+    const panel = document.createElement('section');
+    panel.className = 'dh-tool glass';
+    panel.style.cssText = 'width:min(1080px,100%);box-sizing:border-box;border-radius:22px;padding:22px;display:flex;flex-direction:column;gap:16px;color:#F5F5F7';
+    panel.innerHTML = html;
+    $('.frame').insertAdjacentElement('beforebegin', panel);
+    return panel;
+  }
+  const TF = 'width:100%;box-sizing:border-box;min-height:44px;padding:0 14px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#F5F5F7;font:inherit;font-size:15px';
+  const TL = 'display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#E3CFCC;min-width:0';
+  const TB = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 20px;border-radius:980px;border:none;background:#F5F5F7;color:#1A0609;font:inherit;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap';
+  const TB2 = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:980px;border:1px solid rgba(255,255,255,.25);background:transparent;color:#F5F5F7;font:inherit;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap';
+  const toolHead = (title, sub) => `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap"><div><h1 style="margin:0;font-size:24px;font-weight:600;letter-spacing:-0.015em">${title}</h1><p style="margin:4px 0 0;font-size:14px;color:#C9B5B2">${sub}</p></div><a href="/admin/content" style="${TB2}">Back to admin</a></div>`;
+
+  async function initMarketing() {
+    const art = $('.frame') && $('.frame').firstElementChild;
+    if (!art) return;
+    let c = { v: {}, promos: {} };
+    try { c = await loadContent(); } catch { /* ignore */ }
+    const handle = (c.v.instagram || '').replace(/^@/, '');
+
+    if (page === 'marketing-instagram') {
+      const products = await loadProducts();
+      const spans = $$('span', art);
+      const photoBox = spans.find((s) => text(s) === '[MODEL PHOTO]').parentElement;
+      const [eyebrow, headline] = spans.filter((s) => /New arrival|Body Wave Collection/.test(text(s)));
+      const tagline = spans.find((s) => /little dream/.test(text(s)));
+      const cta = spans.find((s) => text(s) === 'Shop now');
+      const site = spans.find((s) => text(s) === 'houseoflovethhair.com');
+      const panel = toolPanel(`${toolHead('Instagram post maker', 'Pick a wig, edit the words, then download a 1080 × 1080 image ready to post.')}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+          <label style="${TL}">Wig<select data-k="product" style="${TF}">${products.map((p) => `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join('')}</select></label>
+          <label style="${TL}">Label<input data-k="eyebrow" value="${esc(text(eyebrow))}" maxlength="30" style="${TF}"></label>
+          <label style="${TL}">Headline<input data-k="headline" value="${esc(text(headline))}" maxlength="50" style="${TF}"></label>
+          <label style="${TL}">Line under it<input data-k="tagline" value="${esc(text(tagline))}" maxlength="80" style="${TF}"></label>
+          <label style="${TL}">Button<input data-k="cta" value="${esc(text(cta))}" maxlength="24" style="${TF}"></label>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" data-dl style="${TB}">Download image</button><button type="button" data-useprod style="${TB2}">Use wig name as headline</button></div>`);
+      photoBox.style.position = 'relative'; photoBox.style.overflow = 'hidden';
+      const img = document.createElement('img');
+      img.alt = ''; img.crossOrigin = 'anonymous';
+      img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover';
+      photoBox.innerHTML = ''; photoBox.appendChild(img);
+      const sync = () => {
+        const p = products.find((x) => x.slug === $('[data-k="product"]', panel).value) || products[0];
+        if (p) { img.src = p.image; img.style.objectPosition = p.image_position || 'center'; }
+        eyebrow.textContent = $('[data-k="eyebrow"]', panel).value;
+        headline.textContent = $('[data-k="headline"]', panel).value;
+        tagline.textContent = $('[data-k="tagline"]', panel).value;
+        cta.textContent = $('[data-k="cta"]', panel).value;
+        if (site && handle) site.textContent = '@' + handle + ' · houseoflovethhair.com';
+      };
+      panel.addEventListener('input', sync); panel.addEventListener('change', sync); sync();
+      $('[data-useprod]', panel).addEventListener('click', () => { const s = $('[data-k="product"]', panel); $('[data-k="headline"]', panel).value = s.options[s.selectedIndex].text; sync(); });
+      $('[data-dl]', panel).addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.classList.add('dh-busy');
+        try { await downloadPng(art, `loveth-post-${$('[data-k="product"]', panel).value}.png`); } catch { toast('Couldn’t make the image. Please try again.'); }
+        btn.classList.remove('dh-busy');
+      });
+    }
+
+    if (page === 'marketing-thank-you-card') {
+      const para = $('p', art);
+      const tagline = $$('span', art).find((s) => /INSTAGRAM HANDLE/.test(text(s)));
+      const feat = c.promos.featured;
+      const panel = toolPanel(`${toolHead('Thank-you card', 'A card to slip into every order. Print it, or download it for a print shop.')}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+          <label style="${TL}">Discount for their next order<input data-k="off" value="${feat && feat.kind === 'percent' ? feat.value + '%' : feat ? naira(feat.value) : '10%'}" maxlength="12" style="${TF}"></label>
+          <label style="${TL}">Code<input data-k="code" value="${esc(feat ? feat.code : 'FAMILY10')}" maxlength="24" style="${TF};text-transform:uppercase"></label>
+          <label style="${TL}">Instagram handle<input data-k="ig" value="${esc(handle)}" placeholder="without the @" maxlength="40" style="${TF}"></label>
+        </div>
+        <p style="margin:0;font-size:13px;color:#C9B5B2">Make sure the code exists in Admin → Discounts so it works at checkout.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" data-print style="${TB}">Print</button><button type="button" data-dl style="${TB2}">Download for printing</button></div>`);
+      const sync = () => {
+        const off = $('[data-k="off"]', panel).value.trim() || '10%';
+        const code = $('[data-k="code"]', panel).value.trim().toUpperCase() || 'FAMILY10';
+        const ig = $('[data-k="ig"]', panel).value.trim().replace(/^@/, '');
+        para.textContent = `You're more than a customer — you're family. Tag us in your new look and enjoy ${off} off your next order with code ${code}.`;
+        tagline.textContent = (ig ? '@' + ig + ' · ' : '') + 'houseoflovethhair.com';
+      };
+      panel.addEventListener('input', sync); sync();
+      $('[data-print]', panel).addEventListener('click', () => window.print());
+      $('[data-dl]', panel).addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.classList.add('dh-busy');
+        try { await downloadPng(art, 'loveth-thank-you-card.png', 3); } catch { toast('Couldn’t make the image. Please try again.'); }
+        btn.classList.remove('dh-busy');
+      });
+    }
+
+    if (page === 'marketing-app-icon') {
+      const panel = toolPanel(`${toolHead('App icon & logo', 'Download the HL icon for profile pictures, WhatsApp Business and printing.')}
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button type="button" data-size="1024" style="${TB}">Download 1024 px</button>
+          <button type="button" data-size="512" style="${TB2}">512 px</button>
+          <button type="button" data-size="192" style="${TB2}">192 px</button>
+        </div>`);
+      $$('[data-size]', panel).forEach((b) => b.addEventListener('click', async () => {
+        b.classList.add('dh-busy');
+        const n = +b.dataset.size;
+        try { await downloadPng(art, `loveth-icon-${n}.png`, n / 512); } catch { toast('Couldn’t make the image. Please try again.'); }
+        b.classList.remove('dh-busy');
+      }));
+    }
+  }
+
+  /* ======================= install page (/app/install) ======================= */
+  function initInstallPage() {
+    const forAdmin = new URLSearchParams(location.search).get('app') === 'admin';
+    if (forAdmin) { const m = $('link[rel="manifest"]'); if (m) m.href = '/admin/manifest.webmanifest'; }
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    const root = $('[data-install]');
+    if (!root) return;
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const copy = forAdmin
+      ? { name: 'Loveth Admin', url: 'Store admin', title: 'Run the store from your home screen.', points: [['bag', 'New orders at a glance, one tap away'], ['bell', 'Update orders and stock on the go'], ['wifi', 'Opens straight to your dashboard']], back: '/admin' }
+      : { name: 'Dream Hair by Loveth', url: 'houseoflovethhair.com', title: 'Add us to your home screen for a little dream, one tap away.', points: [['bag', 'Shop faster, straight from your home screen'], ['bell', 'Your bag and wishlist, ready when you are'], ['wifi', 'Keeps working on a weak connection']], back: '/' };
+    const ICON = {
+      bag: '<path d="M5 8h14l-1.5 12h-11z"></path><path d="M9 8V6a3 3 0 0 1 6 0v2"></path>',
+      bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 21h4"></path>',
+      wifi: '<path d="M2 9a15 15 0 0 1 20 0"></path><path d="M5 12.5a10 10 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="19.5" r="1"></circle>',
+    };
+    const render = () => {
+      const installed = isInstalled();
+      root.innerHTML = `
+        <div style="display:flex;align-items:center;gap:16px">
+          <img src="/icons/icon-192.png" alt="" width="72" height="72" style="border-radius:18px;box-shadow:0 8px 24px rgba(0,0,0,.35)">
+          <div><div style="font-size:22px;font-weight:600;letter-spacing:-0.015em">${copy.name}</div><div style="font-size:14px;color:#C9B5B2">${copy.url}</div></div>
+        </div>
+        <h1 style="margin:0;font-size:clamp(24px,5vw,30px);line-height:1.2;font-weight:600;letter-spacing:-0.02em">${installed ? 'You’re all set.' : copy.title}</h1>
+        <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px">${copy.points.map(([i, t]) => `<li style="display:flex;align-items:center;gap:14px;font-size:16px"><span style="flex:none;width:40px;height:40px;border-radius:980px;background:rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[i]}</svg></span>${t}</li>`).join('')}</ul>
+        <div data-how></div>
+        ${installed ? `<a href="${copy.back}" style="${TB};min-height:54px">Open ${copy.name}</a>` : `<button type="button" data-go style="${TB};min-height:54px">Install app</button>`}
+        <a href="${copy.back}" style="align-self:center;color:#C9B5B2;text-decoration:none;font-size:16px;padding:8px">Not now</a>`;
+      const go = $('[data-go]', root);
+      if (go) go.addEventListener('click', async () => {
+        if (await promptInstall()) return render();
+        $('[data-how]', root).innerHTML = `<div class="glass" style="border-radius:16px;padding:16px;font-size:15px;line-height:1.55">${ios
+          ? 'On iPhone or iPad: tap the <strong>Share</strong> button <span aria-hidden="true">(□↑)</span> at the bottom of Safari, then <strong>Add to Home Screen</strong>.'
+          : 'Open your browser’s menu <span aria-hidden="true">(⋮)</span> and choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.'}</div>`;
+      });
+    };
+    render();
+    document.addEventListener('dh-can-install', render);
+    window.addEventListener('appinstalled', render);
+  }
+
+  /* ======================= admin app install ======================= */
+  let installEvent = null;
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; document.dispatchEvent(new Event('dh-can-install')); });
+  const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  async function promptInstall() {
+    if (!installEvent) return false;
+    installEvent.prompt();
+    const { outcome } = await installEvent.userChoice;
+    installEvent = null;
+    if (outcome === 'accepted') toast('Installed — find “Loveth Admin” on your home screen');
+    return true;
+  }
+  function initInstallPrompt() {
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    const btn = $$('aside button, aside a').find((b) => text(b) === 'Install');
+    if (!btn) return;
+    const box = btn.parentElement;
+    if (isInstalled()) { if (box) box.hidden = true; return; }
+    stripClick(btn);
+    btn.addEventListener('click', async (e) => { e.preventDefault(); if (!(await promptInstall())) location.href = '/app/install?app=admin'; });
+  }
+
+  /* ======================= ADMIN: roles, shared UI ======================= */
+  const ROLE_NAMES = { owner: 'Owner', manager: 'Manager', sales: 'Sales & customer care', inventory: 'Inventory' };
+  const ROLE_INFO = {
+    owner: 'Everything, including staff accounts and payment settings.',
+    manager: 'Runs the store day to day. Can see settings and payments but not change them, and has no access to staff accounts.',
+    sales: 'Handles orders, customers and WhatsApp enquiries.',
+    inventory: 'Adds products and keeps stock levels up to date.',
+  };
+  const AREAS = [['dashboard', 'Dashboard & reports'], ['orders', 'Orders'], ['products', 'Products & stock'], ['customers', 'Customers'],
+    ['discounts', 'Discounts'], ['content', 'Content & homepage'], ['settings', 'Settings & payments'], ['staff', 'Staff accounts']];
+  // keep in step with public.role_access() in the database, which is what actually enforces this
+  function roleAccess(role, area) {
+    if (role === 'owner') return 'full';
+    if (role === 'manager') return area === 'staff' ? 'none' : area === 'settings' ? 'view' : 'full';
+    if (role === 'sales') return ({ orders: 'full', customers: 'full', dashboard: 'view', products: 'view', discounts: 'view' })[area] || 'none';
+    if (role === 'inventory') return ({ products: 'full', dashboard: 'view', orders: 'view' })[area] || 'none';
+    return 'none';
+  }
+  let ME = null;
+  const canDo = (area, write = true) => { const a = roleAccess(ME && ME.access, area); return a === 'full' || (!write && a === 'view'); };
+  const PAGE_AREA = {
+    'admin-dashboard': 'dashboard', 'admin-orders': 'orders', 'admin-products': 'products', 'admin-product-edit': 'products',
+    'admin-customers': 'customers', 'admin-discounts': 'discounts', 'admin-content': 'content', 'admin-settings': 'settings', 'admin-staff': 'staff',
+  };
+  const NAV_AREA = {
+    '/admin': 'dashboard', '/admin/orders': 'orders', '/admin/products': 'products', '/admin/customers': 'customers',
+    '/admin/discounts': 'discounts', '/admin/content': 'content', '/admin/settings': 'settings', '/admin/staff': 'staff',
+  };
+
+  const UI = {
+    card: 'border-radius:20px;padding:24px;display:flex;flex-direction:column;gap:16px;min-width:0',
+    h2: 'margin:0;font-size:20px;font-weight:600;letter-spacing:-0.015em',
+    label: 'display:flex;flex-direction:column;gap:6px;font-size:14px;font-weight:600;color:#1D1D1F;min-width:0',
+    field: 'width:100%;box-sizing:border-box;min-height:44px;padding:0 14px;border-radius:12px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;font:inherit;font-size:15px;font-weight:400;color:#1D1D1F',
+    area: 'width:100%;box-sizing:border-box;min-height:120px;padding:12px 14px;border-radius:12px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;font:inherit;font-size:15px;font-weight:400;line-height:1.5;color:#1D1D1F;resize:vertical',
+    hint: 'font-size:13px;font-weight:400;color:#6E6E73;line-height:1.45',
+    btn: 'display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 20px;border-radius:980px;border:none;background:#6E1A2C;color:#FFFFFF;font:inherit;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap',
+    btn2: 'display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border-radius:980px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F;font:inherit;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap',
+    danger: 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:980px;border:1px solid rgba(138,31,53,.3);background:#FFFFFF;color:#8A1F35;font:inherit;font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap',
+    small: 'display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 14px;border-radius:980px;border:1px solid rgba(0,0,0,.14);background:#FFFFFF;color:#1D1D1F;font:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;text-decoration:none',
+    th: 'text-align:left;padding:10px 12px;font-size:12px;font-weight:600;color:#6E6E73;border-bottom:1px solid rgba(0,0,0,.08);white-space:nowrap',
+    td: 'padding:12px;border-bottom:1px solid rgba(0,0,0,.06);vertical-align:middle;font-size:15px',
+  };
+  const card = (inner, extra = '') => `<section class="glass-light" style="${UI.card};${extra}">${inner}</section>`;
+  const fieldHtml = (name, label, value, attrs = '', hint = '') => `<label style="${UI.label}">${label}${hint ? `<span style="${UI.hint}">${hint}</span>` : ''}<input name="${name}" value="${esc(value ?? '')}" ${attrs} style="${UI.field}"></label>`;
+  const adminBody = () => $('[data-admin-body]');
+  const setTitle = (h, crumb) => {
+    const h1 = $('main h1'); if (h1) h1.textContent = h;
+    const c = h1 && h1.previousElementSibling;
+    if (c && crumb) c.innerHTML = 'Admin <span aria-hidden="true">/</span> ' + crumb;
+    document.title = 'Admin — ' + h;
+  };
+  const fnError = async (error, data) => {
+    if (data && data.error) return data.error;
+    if (!error) return null;
+    try { return (await error.context.json()).error || error.message; } catch { return error.message; }
+  };
+  const ago = (d) => {
+    if (!d) return 'Never';
+    const s = (Date.now() - new Date(d).getTime()) / 1000;
+    if (s < 300) return 'Online now';
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} hour${s < 7200 ? '' : 's'} ago`;
+    if (s < 172800) return 'Yesterday';
+    if (s < 30 * 86400) return `${Math.round(s / 86400)} days ago`;
+    return fmtDate(d);
+  };
+  function dialog(html, { wide = false } = {}) {
+    const d = document.createElement('dialog');
+    d.className = 'dh-dialog glass-light';
+    d.style.cssText = `width:min(${wide ? 640 : 520}px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow:auto;box-sizing:border-box;padding:28px;border:none;border-radius:24px;color:#1D1D1F`;
+    d.innerHTML = html;
+    document.body.appendChild(d);
+    d.addEventListener('close', () => d.remove());
+    d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+    $$('[data-close]', d).forEach((b) => b.addEventListener('click', () => d.close()));
+    d.showModal();
+    return d;
+  }
+  const noAccess = (msg) => card(`<h2 style="${UI.h2}">You don’t have access to this page</h2><p style="margin:0;${UI.hint};font-size:15px">${msg || 'Ask the store owner if you need it.'}</p><a href="/admin" style="${UI.btn2};align-self:flex-start">Back to the dashboard</a>`);
+  const slugify = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+
+  /* --- resize a photo in the browser before upload (keeps pages fast) --- */
+  async function shrinkImage(file, max = 1800) {
+    try {
+      const bmp = await createImageBitmap(file);
+      const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      return await new Promise((res) => c.toBlob((b) => res(b || file), 'image/jpeg', 0.86));
+    } catch { return file; }
+  }
+
+  /* ======================= ADMIN: add / edit product ======================= */
+  async function initAdminProductEdit() {
+    const body = adminBody();
+    const id = new URLSearchParams(location.search).get('id');
+    const canEdit = canDo('products');
+    let p;
+    if (id) {
+      const { data } = await db.from('products').select('*').eq('id', id).maybeSingle();
+      if (!data) { body.innerHTML = card(`<h2 style="${UI.h2}">Product not found</h2><a href="/admin/products" style="${UI.btn2};align-self:flex-start">Back to products</a>`); return; }
+      p = data;
+    } else {
+      if (!canEdit) { body.innerHTML = noAccess('You can view products but not add them.'); return; }
+      p = { name: '', slug: '', description: '', price_ngn: 0, compare_at_ngn: null, stock: 0, sku: '', badge: null, active: false, category: 'Wigs',
+        style: '', colour: '', lengths: ['14″', '16″', '18″', '20″', '22″', '24″'], laces: ['13×4 frontal', '5×5 closure'], densities: ['150%', '180%', '200%'],
+        image: '', images: [], image_position: 'center 35%', length_prices: {} };
+    }
+    const st = JSON.parse(JSON.stringify(p));
+    st.photos = [p.image, ...(p.images || [])].filter(Boolean);
+    let dirty = false;
+    const focusPct = () => parseInt(String(st.image_position || '').split(' ')[1], 10) || 35;
+    setTitle(p.name || 'New product', `Products <span aria-hidden="true">/</span> ${id ? 'Edit' : 'Add'}`);
+
+    body.innerHTML = `
+      <div class="dh-savebar glass-light" style="position:sticky;top:12px;z-index:5;border-radius:980px;padding:8px 8px 8px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span data-status style="flex:1;min-width:140px;font-size:15px;color:#6E6E73">${canEdit ? (id ? 'All changes saved' : 'New product — not saved yet') : 'View only — your role can’t change products'}</span>
+        ${id ? `<a href="/product?p=${encodeURIComponent(p.slug)}" target="_blank" rel="noopener" style="${UI.btn2}">View in shop</a>` : ''}
+        ${canEdit ? `<button type="button" data-discard style="${UI.btn2}" hidden>Discard</button><button type="button" data-save style="${UI.btn}">${id ? 'Save' : 'Save product'}</button>` : ''}
+      </div>
+      <div class="dh-edit-grid" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,360px);gap:24px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:24px;min-width:0">
+          ${card(`<h2 style="${UI.h2}">Title & description</h2>
+            ${fieldHtml('name', 'Title', st.name, 'required maxlength="120" placeholder="e.g. Honey Blonde Body Wave"')}
+            <label style="${UI.label}">Description<span style="${UI.hint}">What it looks like, how it’s styled and what makes it special. Shown on the product page.</span><textarea name="description" maxlength="2000" style="${UI.area}">${esc(st.description || '')}</textarea></label>`)}
+          ${card(`<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="${UI.h2}">Photos</h2><span style="${UI.hint}">The first photo is the cover. JPG, PNG or WebP.</span></div>
+            <div data-photos style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px"></div>
+            <label style="${UI.label}">Cover photo focus<span style="${UI.hint}">Slide to keep the face in view when the photo is cropped.</span>
+              <input type="range" name="focus" min="0" max="100" step="5" value="${focusPct()}" style="accent-color:#6E1A2C;width:100%"></label>`)}
+          ${card(`<h2 style="${UI.h2}">Options</h2><p style="margin:-8px 0 0;${UI.hint}">Shoppers pick one of each. Leave a list empty to hide that choice.</p>
+            <div data-opts style="display:flex;flex-direction:column;gap:18px"></div>`)}
+          ${card(`<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 style="${UI.h2}">Price by length</h2><span style="${UI.hint}">Leave blank to use the main price.</span></div>
+            <div data-lengthprices style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px"></div>`)}
+          ${card(`<h2 style="${UI.h2}">Search engine preview</h2><div data-seo style="display:flex;flex-direction:column;gap:4px;padding:14px 16px;border-radius:14px;background:#FFFFFF;border:1px solid rgba(0,0,0,.06)"></div>`)}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:24px;min-width:0">
+          ${card(`<h2 style="${UI.h2}">Status</h2>
+            <div role="radiogroup" aria-label="Status" style="display:flex;gap:4px;padding:4px;border-radius:980px;background:rgba(0,0,0,.05)">
+              <label class="dh-seg" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:40px;border-radius:980px;cursor:pointer;font-weight:600;font-size:15px"><input type="radio" name="active" value="1" ${st.active ? 'checked' : ''} style="accent-color:#6E1A2C">Active</label>
+              <label class="dh-seg" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:40px;border-radius:980px;cursor:pointer;font-weight:600;font-size:15px"><input type="radio" name="active" value="0" ${st.active ? '' : 'checked'} style="accent-color:#6E1A2C">Draft</label>
+            </div>
+            <p data-activehint style="margin:0;${UI.hint}"></p>
+            <label style="${UI.label}">Badge<select name="badge" style="${UI.field}"><option value="">None</option>${['New', 'Bestseller', 'Sale'].map((b) => `<option ${st.badge === b ? 'selected' : ''}>${b}</option>`).join('')}</select></label>`)}
+          ${card(`<h2 style="${UI.h2}">Pricing</h2>
+            ${fieldHtml('price_ngn', 'Price (₦)', st.price_ngn || '', 'type="number" min="0" step="500" inputmode="numeric" required')}
+            ${fieldHtml('compare_at_ngn', 'Compare-at price (₦)', st.compare_at_ngn || '', 'type="number" min="0" step="500" inputmode="numeric"', 'Optional. Shown crossed out when it’s higher than the price.')}`)}
+          ${card(`<h2 style="${UI.h2}">Inventory</h2>
+            ${fieldHtml('stock', 'In stock', st.stock, 'type="number" min="0" step="1" inputmode="numeric"', 'Shoppers can’t order more than this. It goes down with every order.')}
+            ${fieldHtml('sku', 'SKU', st.sku || '', 'maxlength="40" placeholder="Optional"')}`)}
+          ${card(`<h2 style="${UI.h2}">Organisation</h2>
+            <label style="${UI.label}">Category<select name="category" style="${UI.field}">${['Wigs', 'Bundles', 'Hair care'].map((c) => `<option ${st.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+            ${fieldHtml('style', 'Style', st.style || '', 'maxlength="60" placeholder="e.g. Body wave"', 'Shown on product cards and used for “Wavy” and other shop filters.')}
+            ${fieldHtml('colour', 'Colour', st.colour || '', 'maxlength="60" placeholder="e.g. Ash brown"')}
+            ${id ? `<p style="margin:0;${UI.hint}">Web address: /product?p=${esc(p.slug)}</p>` : ''}`)}
+          ${id && canEdit ? card(`<h2 style="${UI.h2}">Delete product</h2><p style="margin:0;${UI.hint}">Past orders keep their details. To take it off the shop for now, set it to Draft instead.</p><button type="button" data-delete style="${UI.danger};align-self:flex-start">Delete product</button>`) : ''}
+        </div>
+      </div>`;
+
+    const form = body;
+    const statusEl = $('[data-status]', body);
+    const saveBtn = $('[data-save]', body);
+    const discardBtn = $('[data-discard]', body);
+    const markDirty = () => {
+      if (!canEdit) return;
+      dirty = true;
+      statusEl.textContent = 'Unsaved changes'; statusEl.style.color = '#8A4B0F';
+      if (discardBtn) discardBtn.hidden = false;
+    };
+    window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+    const val = (n) => { const el = $(`[name="${n}"]`, form); return el ? el.value.trim() : ''; };
+    const activeHint = () => {
+      const on = $('[name="active"][value="1"]', form).checked;
+      $('[data-activehint]', form).textContent = on ? 'Visible in your online shop.' : 'Hidden from shoppers. Only staff can see it.';
+    };
+
+    function renderPhotos() {
+      const box = $('[data-photos]', form);
+      const pos = st.image_position || 'center';
+      box.innerHTML = st.photos.map((src, i) => `
+        <figure style="margin:0;position:relative;display:flex;flex-direction:column;gap:6px">
+          <img src="${esc(src)}" alt="" style="width:100%;aspect-ratio:3/4;object-fit:cover;object-position:${i === 0 ? esc(pos) : 'center'};border-radius:14px;border:1px solid rgba(0,0,0,.08);background:#F5F5F7">
+          ${i === 0 ? '<span style="position:absolute;top:8px;left:8px;padding:3px 10px;border-radius:980px;background:rgba(255,255,255,.92);font-size:12px;font-weight:600">Cover</span>' : ''}
+          ${canEdit ? `<span style="display:flex;gap:6px;flex-wrap:wrap">${i ? `<button type="button" data-cover="${i}" style="${UI.small}">Make cover</button>` : ''}<button type="button" data-rm="${i}" aria-label="Remove photo ${i + 1}" style="${UI.small}">Remove</button></span>` : ''}
+        </figure>`).join('') + (canEdit ? `
+        <label style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;aspect-ratio:3/4;border-radius:14px;border:1.5px dashed rgba(110,26,44,.35);background:rgba(255,255,255,.6);cursor:pointer;color:#6E1A2C;font-weight:600;font-size:14px;text-align:center;padding:8px">
+          <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+          <span data-uploadlabel>Add photos</span><input type="file" data-upload accept="image/jpeg,image/png,image/webp" multiple style="position:absolute;width:1px;height:1px;opacity:0"></label>` : '');
+      $$('[data-cover]', box).forEach((b) => b.addEventListener('click', () => { const i = +b.dataset.cover; st.photos.unshift(st.photos.splice(i, 1)[0]); markDirty(); renderPhotos(); renderSeo(); }));
+      $$('[data-rm]', box).forEach((b) => b.addEventListener('click', () => { st.photos.splice(+b.dataset.rm, 1); markDirty(); renderPhotos(); renderSeo(); }));
+      const up = $('[data-upload]', box);
+      if (up) up.addEventListener('change', async () => {
+        const files = Array.from(up.files || []).slice(0, 10);
+        if (!files.length) return;
+        const label = $('[data-uploadlabel]', box);
+        const folder = slugify(val('name')) || 'product';
+        let done = 0;
+        for (const f of files) {
+          label.textContent = `Uploading ${done + 1} of ${files.length}…`;
+          const blob = await shrinkImage(f);
+          const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+          const { error } = await db.storage.from('product-images').upload(path, blob, { contentType: 'image/jpeg', cacheControl: '31536000' });
+          if (error) { toast('Couldn’t upload ' + f.name + ': ' + error.message); continue; }
+          st.photos.push(db.storage.from('product-images').getPublicUrl(path).data.publicUrl);
+          done++;
+        }
+        if (done) { markDirty(); toast(`${done} photo${done > 1 ? 's' : ''} added — press Save to keep ${done > 1 ? 'them' : 'it'}`); }
+        renderPhotos(); renderSeo();
+      });
+    }
+
+    const OPTS = [['lengths', 'Lengths', 'e.g. 18″'], ['laces', 'Lace', 'e.g. 13×4 frontal'], ['densities', 'Density', 'e.g. 180%']];
+    function renderOpts() {
+      const box = $('[data-opts]', form);
+      box.innerHTML = OPTS.map(([k, label, ph]) => `
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-size:14px;font-weight:600">${label}</span>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+            ${(st[k] || []).map((v, i) => `<span style="display:inline-flex;align-items:center;gap:4px;min-height:36px;padding:0 6px 0 14px;border-radius:980px;background:#FFFFFF;border:1px solid rgba(0,0,0,.12);font-size:14px">${esc(v)}${canEdit ? `<button type="button" data-chiprm="${k}:${i}" aria-label="Remove ${esc(v)}" style="width:28px;height:28px;border:none;border-radius:980px;background:transparent;cursor:pointer;color:#6E6E73;font-size:16px;line-height:1">×</button>` : '&nbsp;'}</span>`).join('')}
+            ${canEdit ? `<span style="display:inline-flex;gap:6px"><input data-chipin="${k}" placeholder="${ph}" aria-label="Add ${label.toLowerCase()}" maxlength="30" style="${UI.field};width:150px;min-height:36px"><button type="button" data-chipadd="${k}" style="${UI.small}">Add</button></span>` : ''}
+          </div>
+        </div>`).join('');
+      $$('[data-chiprm]', box).forEach((b) => b.addEventListener('click', () => { const [k, i] = b.dataset.chiprm.split(':'); st[k].splice(+i, 1); markDirty(); renderOpts(); renderLengthPrices(); }));
+      const add = (k) => {
+        const inp = $(`[data-chipin="${k}"]`, box);
+        let v = inp.value.trim();
+        if (k === 'lengths' && /^\d+$/.test(v)) v += '″';
+        if (k === 'densities' && /^\d+$/.test(v)) v += '%';
+        if (!v || st[k].includes(v)) { inp.value = ''; return; }
+        st[k].push(v);
+        if (k === 'lengths') st[k].sort((a, b) => parseFloat(a) - parseFloat(b));
+        markDirty(); renderOpts(); renderLengthPrices();
+        $(`[data-chipin="${k}"]`, form).focus();
+      };
+      $$('[data-chipadd]', box).forEach((b) => b.addEventListener('click', () => add(b.dataset.chipadd)));
+      $$('[data-chipin]', box).forEach((i) => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(i.dataset.chipin); } }));
+    }
+
+    function renderLengthPrices() {
+      const box = $('[data-lengthprices]', form);
+      const base = val('price_ngn');
+      box.innerHTML = (st.lengths || []).length ? st.lengths.map((L) => `<label style="${UI.label}">${esc(L)}<input type="number" min="0" step="500" inputmode="numeric" data-lp="${esc(L)}" value="${st.length_prices[L] ?? ''}" placeholder="${base ? '₦' + Number(base).toLocaleString('en-NG') : 'Main price'}" ${canEdit ? '' : 'disabled'} style="${UI.field}"></label>`).join('')
+        : `<p style="margin:0;${UI.hint}">Add lengths above to price them separately.</p>`;
+      $$('[data-lp]', box).forEach((i) => i.addEventListener('input', () => {
+        const n = parseInt(i.value, 10);
+        if (n > 0) st.length_prices[i.dataset.lp] = n; else delete st.length_prices[i.dataset.lp];
+        markDirty();
+      }));
+    }
+
+    function renderSeo() {
+      const name = val('name') || 'Product title';
+      const desc = (val('description') || 'Add a description to show here.').slice(0, 155);
+      $('[data-seo]', form).innerHTML = `<span style="font-size:13px;color:#1E5B34">houseoflovethhair.com › product › ${esc(id ? p.slug : slugify(name) || 'new-product')}</span>
+        <span style="font-size:18px;color:#1F4A7A">${esc(name)} | House of Loveth Hair</span><span style="font-size:14px;color:#3A3A3C;line-height:1.45">${esc(desc)}</span>`;
+    }
+
+    renderPhotos(); renderOpts(); renderLengthPrices(); renderSeo(); activeHint();
+    if (!canEdit) $$('input, textarea, select', form).forEach((el) => { el.disabled = true; });
+    form.addEventListener('input', (e) => {
+      if (e.target.matches('[data-chipin], [data-upload], [data-lp]')) return;
+      if (e.target.name === 'focus') { st.image_position = `center ${e.target.value}%`; const img = $('[data-photos] img', form); if (img) img.style.objectPosition = st.image_position; }
+      if (e.target.name === 'price_ngn') renderLengthPrices();
+      if (e.target.name === 'active') activeHint();
+      if (['name', 'description'].includes(e.target.name)) renderSeo();
+      markDirty();
+    });
+    form.addEventListener('change', (e) => { if (e.target.name === 'active') { activeHint(); markDirty(); } if (e.target.tagName === 'SELECT') markDirty(); });
+    if (discardBtn) discardBtn.addEventListener('click', () => { dirty = false; location.reload(); });
+
+    if (saveBtn) saveBtn.addEventListener('click', async () => {
+      const name = val('name');
+      const price = parseInt(val('price_ngn'), 10);
+      const active = $('[name="active"][value="1"]', form).checked;
+      if (!name) { $('[name="name"]', form).focus(); toast('Please add a title'); return; }
+      if (!(price > 0)) { $('[name="price_ngn"]', form).focus(); toast('Please add a price'); return; }
+      if (active && !st.photos.length) { toast('Add at least one photo before making it active'); return; }
+      const compare = parseInt(val('compare_at_ngn'), 10);
+      const lp = {};
+      (st.lengths || []).forEach((L) => { if (st.length_prices[L] > 0 && st.length_prices[L] !== price) lp[L] = st.length_prices[L]; });
+      const row = {
+        name, description: val('description') || null, price_ngn: price, compare_at_ngn: compare > 0 ? compare : null,
+        stock: Math.max(0, parseInt(val('stock'), 10) || 0), sku: val('sku') || null, badge: val('badge') || null, active,
+        category: val('category') || 'Wigs', style: val('style') || null, colour: val('colour') || null,
+        lengths: st.lengths, laces: st.laces, densities: st.densities, length_prices: lp,
+        image: st.photos[0] || null, images: st.photos.slice(1), image_position: st.image_position || 'center 35%',
+      };
+      saveBtn.classList.add('dh-busy');
+      let res;
+      if (id) res = await db.from('products').update(row).eq('id', id).select().maybeSingle();
+      else {
+        let slug = slugify(name) || 'product';
+        const { data: taken } = await db.from('products').select('slug').like('slug', slug + '%');
+        if ((taken || []).some((t) => t.slug === slug)) { let n = 2; while ((taken || []).some((t) => t.slug === `${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
+        const { data: last } = await db.from('products').select('sort').order('sort', { ascending: false }).limit(1);
+        res = await db.from('products').insert({ ...row, slug, sort: ((last && last[0] && last[0].sort) || 0) + 1 }).select().maybeSingle();
+      }
+      saveBtn.classList.remove('dh-busy');
+      if (res.error || !res.data) { toast('Couldn’t save: ' + ((res.error && res.error.message) || 'please try again')); return; }
+      dirty = false;
+      toast(id ? `${name} saved — the shop updates right away` : `${name} added`);
+      if (!id) { location.replace('/admin/product-edit?id=' + res.data.id); return; }
+      statusEl.textContent = 'All changes saved'; statusEl.style.color = '#1E5B34';
+      if (discardBtn) discardBtn.hidden = true;
+      setTitle(name, 'Products <span aria-hidden="true">/</span> Edit');
+    });
+
+    const del = $('[data-delete]', body);
+    if (del) del.addEventListener('click', async () => {
+      if (!confirm(`Delete ${p.name}? This can’t be undone. Past orders keep their details.`)) return;
+      del.classList.add('dh-busy');
+      const { error } = await db.from('products').delete().eq('id', id);
+      del.classList.remove('dh-busy');
+      if (error) { toast('Couldn’t delete: ' + error.message); return; }
+      dirty = false;
+      toast(`${p.name} deleted`);
+      location.replace('/admin/products');
+    });
+  }
+
+  /* ======================= ADMIN: staff ======================= */
+  async function initAdminStaff() {
+    const body = adminBody();
+    if (!canDo('staff')) { body.innerHTML = noAccess('Only the owner can manage staff accounts.'); return; }
+    const call = async (payload) => {
+      const { data, error } = await db.functions.invoke('staff-admin', { body: payload });
+      const msg = await fnError(error, data);
+      if (msg) { toast(msg); return null; }
+      return data;
+    };
+    const inviteMsg = (s, link) => `Hi ${String(s.full_name || '').split(' ')[0] || 'there'}, you’ve been added to the Dream Hair by Loveth store admin as ${ROLE_NAMES[s.access]}. Set your password here (the link works once and expires in 48 hours): ${link}`;
+    function showLink(s, res) {
+      const d = dialog(`
+        <h2 style="${UI.h2};font-size:24px">Invite ready</h2>
+        <p style="margin:8px 0 0;font-size:15px;line-height:1.5">${res.emailed ? `We’ve emailed the invite to <strong>${esc(s.email)}</strong>. You can also send it on WhatsApp.` : `Send this link to <strong>${esc(s.full_name)}</strong>. ${res.email_ready ? 'The email didn’t go through, so share it yourself.' : 'Email isn’t connected yet, so share it on WhatsApp or copy it.'}`}</p>
+        <div style="display:flex;gap:8px;margin-top:16px"><input readonly value="${esc(res.link)}" aria-label="Invite link" style="${UI.field};font-size:13px" data-linkfield><button type="button" data-copy style="${UI.btn2}">Copy</button></div>
+        <p style="margin:10px 0 0;${UI.hint}">It works once and expires in 48 hours. They choose their own password; you never see it.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:20px">
+          ${s.phone ? `<a href="${wa(s.phone)}?text=${encodeURIComponent(inviteMsg(s, res.link))}" target="_blank" rel="noopener" style="${UI.btn}">Send on WhatsApp</a>` : `<a href="https://wa.me/?text=${encodeURIComponent(inviteMsg(s, res.link))}" target="_blank" rel="noopener" style="${UI.btn}">Share on WhatsApp</a>`}
+          <button type="button" data-close style="${UI.btn2}">Done</button>
+        </div>`);
+      $('[data-copy]', d).addEventListener('click', async () => {
+        const f = $('[data-linkfield]', d);
+        try { await navigator.clipboard.writeText(f.value); toast('Link copied'); } catch { f.select(); document.execCommand('copy'); toast('Link copied'); }
+      });
+    }
+
+    async function render() {
+      const [{ data: staff = [] }, { data: activity = [] }] = await Promise.all([
+        db.from('staff').select('*').order('created_at'),
+        db.from('staff_activity').select('*').order('created_at', { ascending: false }).limit(25),
+      ]);
+      const n = (s) => staff.filter((x) => x.status === s).length;
+      const recent = staff.filter((x) => x.last_seen_at && Date.now() - new Date(x.last_seen_at).getTime() < 7 * 864e5).length;
+      const stat = (label, value, sub) => `<div class="glass-light" style="border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:6px"><span style="font-size:14px;color:#6E6E73;font-weight:600">${label}</span><span style="font-size:32px;font-weight:600;letter-spacing:-0.02em">${value}</span><span style="${UI.hint}">${sub}</span></div>`;
+      const me = (db.auth && (await db.auth.getUser()).data.user) || {};
+      const statusPill = (x) => x.status === 'active' ? pill('active') : x.status === 'invited' ? pill('unpaid').replace('Awaiting payment', 'Invited') : pill('cancelled').replace('Cancelled', 'Suspended');
+      body.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <p style="margin:0;${UI.hint};font-size:15px;max-width:620px">Give each person their own login with only the access they need. Invites are links they open to set their own password.</p>
+          <button type="button" data-add style="${UI.btn}">Add staff</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:16px">
+          ${stat('Staff accounts', staff.length, `${n('active')} active · ${n('invited')} invited · ${n('suspended')} suspended`)}
+          ${stat('Active this week', recent, 'Signed in to the admin in the last 7 days')}
+          ${stat('Waiting to join', n('invited'), n('invited') ? 'Invite links expire after 48 hours' : 'No pending invites')}
+        </div>
+        ${card(`<h2 style="${UI.h2}">Team</h2>
+          <div style="overflow-x:auto;margin:0 -8px"><table class="dh-stack" style="width:100%;border-collapse:collapse;min-width:680px">
+            <thead><tr><th style="${UI.th}">Staff member</th><th style="${UI.th}">Role</th><th style="${UI.th}">Status</th><th style="${UI.th}">Last seen</th><th style="${UI.th};text-align:right">Actions</th></tr></thead>
+            <tbody>${staff.map((x) => {
+              const self = x.user_id === me.id;
+              const nm = x.full_name || (x.email || '').split('@')[0];
+              return `<tr data-uid="${x.user_id}">
+                <td style="${UI.td}"><span style="display:flex;align-items:center;gap:10px">${avatar({ first_name: nm.split(' ')[0], last_name: nm.split(' ')[1] || '' })}<span style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-weight:600">${esc(nm)}${self ? ' <span style="font-weight:400;color:#6E6E73">(you)</span>' : ''}</span><span style="font-size:13px;color:#6E6E73;overflow-wrap:anywhere">${esc(x.email || '')}${x.phone ? ' · ' + esc(x.phone) : ''}</span></span></span></td>
+                <td style="${UI.td}">${self ? esc(ROLE_NAMES[x.access]) : `<select data-role aria-label="Role for ${esc(nm)}" style="${UI.field};min-height:38px;width:auto">${Object.keys(ROLE_NAMES).map((r) => `<option value="${r}" ${x.access === r ? 'selected' : ''}>${ROLE_NAMES[r]}</option>`).join('')}</select>`}</td>
+                <td style="${UI.td}">${statusPill(x)}</td>
+                <td style="${UI.td};color:#6E6E73;font-size:14px;white-space:nowrap">${x.status === 'invited' ? 'Invited ' + ago(x.invited_at).toLowerCase().replace('online now', 'just now') : ago(x.last_seen_at)}</td>
+                <td style="${UI.td};text-align:right"><span style="display:inline-flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${self ? '' : [
+                  x.status === 'invited' ? `<button type="button" data-act="resend" style="${UI.small}">New invite link</button>` : '',
+                  x.status === 'active' ? `<button type="button" data-act="suspend" style="${UI.small}">Suspend</button>` : '',
+                  x.status === 'suspended' ? `<button type="button" data-act="reactivate" style="${UI.small}">Reactivate</button>` : '',
+                  `<button type="button" data-act="remove" style="${UI.small};color:#8A1F35">Remove</button>`].join('')}</span></td></tr>`;
+            }).join('')}</tbody></table></div>`)}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,560px),1fr));gap:24px;align-items:start">
+          ${card(`<h2 style="${UI.h2}">Roles & permissions</h2>
+            <div style="overflow-x:auto;margin:0 -8px"><table style="width:100%;border-collapse:collapse;min-width:520px">
+              <thead><tr><th style="${UI.th}">Area</th>${Object.values(ROLE_NAMES).map((r) => `<th style="${UI.th}">${r.replace(' & customer care', '')}</th>`).join('')}</tr></thead>
+              <tbody>${AREAS.map(([k, label]) => `<tr><td style="${UI.td};font-size:14px">${label}</td>${Object.keys(ROLE_NAMES).map((r) => {
+                const a = roleAccess(r, k);
+                return `<td style="${UI.td};font-size:13px;white-space:nowrap">${a === 'full' ? '<span style="color:#1E5B34;font-weight:600">● Full</span>' : a === 'view' ? '<span style="color:#8A4B0F">◐ View</span>' : '<span style="color:#A1A1A6">○ None</span>'}</td>`;
+              }).join('')}</tr>`).join('')}</tbody></table></div>
+            <p style="margin:0;${UI.hint}">The database enforces these, so a role can’t get around them.</p>`)}
+          ${card(`<h2 style="${UI.h2}">Staff activity</h2>
+            ${activity.length ? `<ol style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column">${activity.map((a) => `<li style="padding:10px 0;border-top:1px solid rgba(0,0,0,.06);font-size:15px;line-height:1.45"><strong>${esc(a.actor || 'Someone')}</strong> ${esc(a.action)} ${a.target_url ? `<a href="${esc(a.target_url)}" style="color:#6E1A2C;font-weight:600;text-decoration:none">${esc(a.target || '')}</a>` : `<strong>${esc(a.target || '')}</strong>`}<div style="${UI.hint}">${fmtDateTime(a.created_at)}</div></li>`).join('')}</ol>`
+              : `<p style="margin:0;${UI.hint};font-size:15px">Order, product and staff changes appear here.</p>`}`)}
+        </div>`;
+
+      $('[data-add]', body).addEventListener('click', openInvite);
+      $$('tr[data-uid]', body).forEach((tr) => {
+        const s = staff.find((x) => x.user_id === tr.dataset.uid);
+        const role = $('[data-role]', tr);
+        if (role) role.addEventListener('change', async () => {
+          if (role.value === 'owner' && !confirm(`Make ${s.full_name || s.email} an owner? Owners can manage staff and payments.`)) { role.value = s.access; return; }
+          if (await call({ action: 'update', user_id: s.user_id, access: role.value })) { toast(`${s.full_name || s.email} is now ${ROLE_NAMES[role.value]}`); render(); } else role.value = s.access;
+        });
+        $$('[data-act]', tr).forEach((b) => b.addEventListener('click', async () => {
+          const who = s.full_name || s.email;
+          const act = b.dataset.act;
+          if (act === 'remove' && !confirm(`Remove ${who} from the team? They’ll lose access straight away.`)) return;
+          if (act === 'suspend' && !confirm(`Suspend ${who}? They won’t be able to use the admin until you reactivate them.`)) return;
+          b.classList.add('dh-busy');
+          const res = await call(act === 'resend' ? { action: 'resend', user_id: s.user_id }
+            : act === 'remove' ? { action: 'remove', user_id: s.user_id }
+            : { action: 'update', user_id: s.user_id, status: act === 'suspend' ? 'suspended' : 'active' });
+          b.classList.remove('dh-busy');
+          if (!res) return;
+          if (act === 'resend') showLink(s, res);
+          else toast(act === 'remove' ? `${who} removed` : act === 'suspend' ? `${who} suspended` : `${who} reactivated`);
+          render();
+        }));
+      });
+    }
+
+    function openInvite() {
+      const d = dialog(`
+        <form data-invite style="display:flex;flex-direction:column;gap:16px">
+          <div><h2 style="${UI.h2};font-size:24px">Add a staff member</h2><p style="margin:6px 0 0;${UI.hint};font-size:15px">They’ll get a secure link to set their own password. You never see or share it.</p></div>
+          ${fieldHtml('full_name', 'Full name', '', 'required maxlength="100" autocomplete="off"')}
+          ${fieldHtml('email', 'Work email', '', 'type="email" required maxlength="254" autocomplete="off"', 'They sign in with this.')}
+          ${fieldHtml('phone', 'Phone (WhatsApp)', '', 'type="tel" maxlength="40" autocomplete="off"', 'Optional. Lets you send the invite on WhatsApp.')}
+          <fieldset style="border:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px"><legend style="font-size:14px;font-weight:600;padding:0 0 8px">Role</legend>
+            ${['manager', 'sales', 'inventory', 'owner'].map((r, i) => `<label style="display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:14px;border:1px solid rgba(0,0,0,.1);background:#FFFFFF;cursor:pointer"><input type="radio" name="access" value="${r}" ${i === 0 ? 'checked' : ''} style="accent-color:#6E1A2C;margin-top:3px;width:18px;height:18px"><span style="display:flex;flex-direction:column;gap:2px"><span style="font-weight:600">${ROLE_NAMES[r]}</span><span style="${UI.hint}">${ROLE_INFO[r]}</span></span></label>`).join('')}
+          </fieldset>
+          <p data-err class="dh-error" role="alert" hidden></p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" style="${UI.btn}">Create account & get invite link</button><button type="button" data-close style="${UI.btn2}">Cancel</button></div>
+        </form>`);
+      const f = $('[data-invite]', d);
+      f.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = Object.fromEntries(new FormData(f));
+        const btn = $('button[type=submit]', f);
+        const err = $('[data-err]', f);
+        err.hidden = true;
+        btn.classList.add('dh-busy');
+        const { data, error } = await db.functions.invoke('staff-admin', { body: { action: 'invite', ...fd } });
+        btn.classList.remove('dh-busy');
+        const msg = await fnError(error, data);
+        if (msg) { err.textContent = msg; err.hidden = false; return; }
+        d.close();
+        showLink({ full_name: fd.full_name, email: fd.email, phone: fd.phone, access: fd.access }, data);
+        render();
+      });
+    }
+    await render();
+  }
+
+  /* ======================= ADMIN: discounts ======================= */
+  async function initAdminDiscounts() {
+    const body = adminBody();
+    if (!canDo('discounts', false)) { body.innerHTML = noAccess(); return; }
+    const canEdit = canDo('discounts');
+    const label = (d) => d.kind === 'percent' ? `${d.value}% off` : `${naira(d.value)} off`;
+    const state = (d) => {
+      const now = Date.now();
+      if (!d.active) return ['draft', 'Off'];
+      if (d.starts_at && new Date(d.starts_at).getTime() > now) return ['processing', 'Scheduled'];
+      if (d.ends_at && new Date(d.ends_at).getTime() < now) return ['cancelled', 'Ended'];
+      if (d.max_uses && d.uses >= d.max_uses) return ['cancelled', 'Used up'];
+      return ['active', 'Active'];
+    };
+    async function render() {
+      const [{ data: list = [], error }, { data: orders = [] }] = await Promise.all([
+        db.from('discounts').select('*').order('created_at', { ascending: false }),
+        db.from('orders').select('discount_code, discount_ngn, total_ngn, status').not('discount_code', 'is', null),
+      ]);
+      if (error) { body.innerHTML = card(`<p style="margin:0">Couldn’t load discounts: ${esc(error.message)}</p>`); return; }
+      const sales = {};
+      orders.filter((o) => o.status !== 'cancelled').forEach((o) => { const s = sales[o.discount_code] || (sales[o.discount_code] = { n: 0, given: 0, total: 0 }); s.n++; s.given += o.discount_ngn; s.total += o.total_ngn; });
+      body.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <p style="margin:0;${UI.hint};font-size:15px;max-width:620px">Codes shoppers type at checkout. Feature one to show it in the announcement bar at the top of the shop.</p>
+          ${canEdit ? `<button type="button" data-new style="${UI.btn}">Create discount</button>` : ''}
+        </div>
+        ${card(`<h2 style="${UI.h2}">Discount codes</h2>
+          ${list.length ? `<div style="overflow-x:auto;margin:0 -8px"><table class="dh-stack" style="width:100%;border-collapse:collapse;min-width:720px">
+            <thead><tr><th style="${UI.th}">Code</th><th style="${UI.th}">Discount</th><th style="${UI.th}">Conditions</th><th style="${UI.th}">Used</th><th style="${UI.th}">Sales</th><th style="${UI.th}">Status</th><th style="${UI.th};text-align:right">${canEdit ? 'Actions' : ''}</th></tr></thead>
+            <tbody>${list.map((d) => {
+              const [k, txt] = state(d);
+              const cond = [d.min_subtotal_ngn ? `Bag over ${naira(d.min_subtotal_ngn)}` : '', d.first_order_only ? 'First order only' : '',
+                d.starts_at ? `From ${fmtDate(d.starts_at)}` : '', d.ends_at ? `Until ${fmtDate(d.ends_at)}` : ''].filter(Boolean).join(' · ') || 'Any order';
+              const s = sales[d.code];
+              return `<tr data-id="${d.id}"><td style="${UI.td}"><span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><code style="font-size:15px;font-weight:700;letter-spacing:.04em">${esc(d.code)}</code>${d.featured ? '<span style="padding:2px 8px;border-radius:980px;background:#F6E3E1;color:#6E1A2C;font-size:11px;font-weight:600">In announcement bar</span>' : ''}</span></td>
+                <td style="${UI.td};white-space:nowrap">${label(d)}</td><td style="${UI.td};font-size:14px;color:#3A3A3C">${cond}</td>
+                <td style="${UI.td};white-space:nowrap">${d.uses}${d.max_uses ? ` of ${d.max_uses}` : ''}</td>
+                <td style="${UI.td};font-size:14px;white-space:nowrap">${s ? `${naira(s.total)}<div style="${UI.hint}">${naira(s.given)} off · ${s.n} order${s.n > 1 ? 's' : ''}</div>` : '<span style="color:#A1A1A6">—</span>'}</td>
+                <td style="${UI.td}">${pill(k).replace(/>[^<]*<\/span>$/, `>${txt}</span>`)}</td>
+                <td style="${UI.td};text-align:right">${canEdit ? `<span style="display:inline-flex;gap:6px"><button type="button" data-edit style="${UI.small}">Edit</button><button type="button" data-toggle style="${UI.small}">${d.active ? 'Turn off' : 'Turn on'}</button><button type="button" data-del style="${UI.small};color:#8A1F35">Delete</button></span>` : ''}</td></tr>`;
+            }).join('')}</tbody></table></div>`
+            : `<p style="margin:0;${UI.hint};font-size:15px">No discount codes yet.${canEdit ? ' Create one for your first-order offer, a sale or a loyal customer.' : ''}</p>`}`)}`;
+      const nb = $('[data-new]', body);
+      if (nb) nb.addEventListener('click', () => edit(null));
+      $$('tr[data-id]', body).forEach((tr) => {
+        const d = list.find((x) => x.id === tr.dataset.id);
+        const e = $('[data-edit]', tr); if (e) e.addEventListener('click', () => edit(d));
+        const t = $('[data-toggle]', tr); if (t) t.addEventListener('click', async () => {
+          const { error: er } = await db.from('discounts').update({ active: !d.active }).eq('id', d.id);
+          if (er) toast('Couldn’t save: ' + er.message); else { toast(`${d.code} turned ${d.active ? 'off' : 'on'}`); render(); }
+        });
+        const x = $('[data-del]', tr); if (x) x.addEventListener('click', async () => {
+          if (!confirm(`Delete ${d.code}? Shoppers won’t be able to use it. Past orders keep their discount.`)) return;
+          const { error: er } = await db.from('discounts').delete().eq('id', d.id);
+          if (er) toast('Couldn’t delete: ' + er.message); else { toast(`${d.code} deleted`); render(); }
+        });
+      });
+    }
+    function edit(d) {
+      const v = d || { code: '', kind: 'percent', value: 10, min_subtotal_ngn: 0, first_order_only: false, featured: false, max_uses: null, starts_at: null, ends_at: null, active: true };
+      const day = (t) => t ? new Date(t).toISOString().slice(0, 10) : '';
+      const dlg = dialog(`
+        <form data-disc style="display:flex;flex-direction:column;gap:16px">
+          <h2 style="${UI.h2};font-size:24px">${d ? 'Edit discount' : 'Create discount'}</h2>
+          <label style="${UI.label}">Code<span style="${UI.hint}">Letters and numbers. Shoppers type this at checkout.</span>
+            <span style="display:flex;gap:8px"><input name="code" required pattern="[A-Za-z0-9_-]{3,24}" maxlength="24" value="${esc(v.code)}" style="${UI.field};text-transform:uppercase;letter-spacing:.04em;font-weight:600"><button type="button" data-gen style="${UI.btn2}">Generate</button></span></label>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+            <label style="${UI.label}">Type<select name="kind" style="${UI.field}"><option value="percent" ${v.kind === 'percent' ? 'selected' : ''}>Percentage off</option><option value="fixed" ${v.kind === 'fixed' ? 'selected' : ''}>Naira amount off</option></select></label>
+            ${fieldHtml('value', '<span data-vlabel>Amount</span>', v.value, 'type="number" min="1" step="1" required inputmode="numeric"')}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+            ${fieldHtml('min_subtotal_ngn', 'Minimum bag (₦)', v.min_subtotal_ngn || '', 'type="number" min="0" step="1000" inputmode="numeric" placeholder="None"')}
+            ${fieldHtml('max_uses', 'Use limit', v.max_uses || '', 'type="number" min="1" step="1" inputmode="numeric" placeholder="Unlimited"')}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+            ${fieldHtml('starts_at', 'Starts', day(v.starts_at), 'type="date"')}
+            ${fieldHtml('ends_at', 'Ends', day(v.ends_at), 'type="date"', '')}
+          </div>
+          <label style="display:flex;gap:10px;align-items:flex-start;font-size:15px;cursor:pointer"><input type="checkbox" name="first_order_only" ${v.first_order_only ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px;margin-top:2px"><span>First order only<span style="display:block;${UI.hint}">Checked against the shopper’s email.</span></span></label>
+          <label style="display:flex;gap:10px;align-items:flex-start;font-size:15px;cursor:pointer"><input type="checkbox" name="featured" ${v.featured ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px;margin-top:2px"><span>Show in the announcement bar<span style="display:block;${UI.hint}">Replaces any other featured code.</span></span></label>
+          <label style="display:flex;gap:10px;align-items:center;font-size:15px;cursor:pointer"><input type="checkbox" name="active" ${v.active ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">Turned on</label>
+          <p data-err class="dh-error" role="alert" hidden></p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" style="${UI.btn}">${d ? 'Save' : 'Create discount'}</button><button type="button" data-close style="${UI.btn2}">Cancel</button></div>
+        </form>`);
+      const f = $('[data-disc]', dlg);
+      const kind = $('[name="kind"]', f);
+      const vl = () => { $('[data-vlabel]', f).textContent = kind.value === 'percent' ? 'Percent off (1–90)' : 'Naira off (₦)'; $('[name="value"]', f).max = kind.value === 'percent' ? 90 : ''; };
+      kind.addEventListener('change', vl); vl();
+      $('[data-gen]', f).addEventListener('click', () => { $('[name="code"]', f).value = 'LOVETH' + Math.random().toString(36).slice(2, 6).toUpperCase(); });
+      f.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(f);
+        const err = $('[data-err]', f);
+        const n = (k) => parseInt(fd.get(k), 10);
+        const row = {
+          code: String(fd.get('code')).trim().toUpperCase(), kind: fd.get('kind'), value: n('value'),
+          min_subtotal_ngn: n('min_subtotal_ngn') > 0 ? n('min_subtotal_ngn') : 0, max_uses: n('max_uses') > 0 ? n('max_uses') : null,
+          starts_at: fd.get('starts_at') ? new Date(fd.get('starts_at') + 'T00:00:00').toISOString() : null,
+          ends_at: fd.get('ends_at') ? new Date(fd.get('ends_at') + 'T23:59:59').toISOString() : null,
+          first_order_only: fd.get('first_order_only') === 'on', featured: fd.get('featured') === 'on', active: fd.get('active') === 'on',
+        };
+        if (row.kind === 'percent' && (row.value < 1 || row.value > 90)) { err.textContent = 'Use a percentage between 1 and 90.'; err.hidden = false; return; }
+        if (row.starts_at && row.ends_at && row.ends_at < row.starts_at) { err.textContent = 'The end date is before the start date.'; err.hidden = false; return; }
+        const btn = $('button[type=submit]', f);
+        btn.classList.add('dh-busy');
+        if (row.featured) await db.from('discounts').update({ featured: false }).eq('featured', true).neq('code', row.code);
+        const res = d ? await db.from('discounts').update(row).eq('id', d.id) : await db.from('discounts').insert(row);
+        btn.classList.remove('dh-busy');
+        if (res.error) {
+          err.textContent = /duplicate|unique/i.test(res.error.message) ? 'That code already exists.' : /code_check|discounts_code/.test(res.error.message) ? 'Use 3–24 letters or numbers.' : res.error.message;
+          err.hidden = false; return;
+        }
+        dlg.close();
+        toast(d ? `${row.code} saved` : `${row.code} created`);
+        render();
+      });
+    }
+    await render();
+  }
+
+  /* ======================= ADMIN: content ======================= */
+  const CONTENT = [
+    ['Contact details', 'Shown in the footer, help page and product pages.', [
+      ['whatsapp', 'WhatsApp number', 'e.g. 0803 123 4567', 'input'], ['email', 'Email address', 'e.g. hello@houseoflovethhair.com', 'input'],
+      ['instagram', 'Instagram handle', 'without the @', 'input'], ['tiktok', 'TikTok handle', 'without the @', 'input'],
+      ['hours', 'Opening hours', 'e.g. Mon–Sat, 9am–7pm', 'input']]],
+    ['Delivery, returns & payment', 'Shown at checkout, on product pages and on the help page.', [
+      ['delivery_time', 'Usual delivery time', 'e.g. 2–4 working days', 'input'], ['pickup', 'Pick-up location', 'e.g. 12 Admiralty Way, Lekki, Lagos', 'input'],
+      ['payment_methods', 'How customers can pay', 'e.g. Bank transfer · Pay on pick-up', 'input'],
+      ['delivery_areas', 'Delivery areas and times', 'Where you deliver and how long it takes', 'area'], ['returns', 'Returns policy', 'What can be returned, and how', 'area']]],
+    ['Product details', 'The same on every product page.', [
+      ['hair_type', 'Hair type / origin', 'e.g. 100% human hair, Vietnamese', 'input'], ['lace_details', 'Lace details', 'e.g. HD lace, pre-plucked hairline', 'input'],
+      ['cap_sizes', 'Cap sizes', 'e.g. Medium (22.5″), adjustable straps', 'input'], ['care_tips', 'Wig care tips', 'Washing, styling and storing', 'area']]],
+    ['Our story', 'The About page.', [
+      ['story', 'Your story', 'How Dream Hair by Loveth started and what makes your wigs special', 'area'], ['promise', 'Your promise', 'Your promise to your customers', 'area']]],
+  ];
+  async function initAdminContent() {
+    const body = adminBody();
+    if (!canDo('content', false)) { body.innerHTML = noAccess(); return; }
+    const canEdit = canDo('content');
+    const { data: rows = [] } = await db.from('site_content').select('*');
+    const v = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    const filled = CONTENT.flatMap((g) => g[2]).filter(([k]) => (v[k] || '').trim()).length;
+    const total = CONTENT.flatMap((g) => g[2]).length;
+    body.innerHTML = `
+      <div class="dh-savebar glass-light" style="position:sticky;top:12px;z-index:5;border-radius:980px;padding:8px 8px 8px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span data-status style="flex:1;min-width:160px;font-size:15px;color:#6E6E73">${filled} of ${total} filled in. Empty ones show as [placeholders] in the shop.</span>
+        ${canEdit ? `<button type="button" data-save style="${UI.btn}">Save content</button>` : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:24px;align-items:start">
+        ${CONTENT.map(([title, sub, fields]) => card(`<div><h2 style="${UI.h2}">${title}</h2><p style="margin:4px 0 0;${UI.hint}">${sub}</p></div>
+          ${fields.map(([k, label, ph, kind]) => kind === 'area'
+            ? `<label style="${UI.label}">${label}<textarea name="${k}" maxlength="4000" placeholder="${esc(ph)}" style="${UI.area}">${esc(v[k] || '')}</textarea></label>`
+            : fieldHtml(k, label, v[k] || '', `maxlength="300" placeholder="${esc(ph)}"`)).join('')}`)).join('')}
+      </div>
+      ${card(`<h2 style="${UI.h2}">Marketing tools</h2><p style="margin:0;${UI.hint}">Made from your products and this content.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <a href="/marketing/instagram" style="${UI.btn2}">Instagram post maker</a>
+          <a href="/marketing/thank-you-card" style="${UI.btn2}">Printable thank-you card</a>
+          <a href="/marketing/app-icon" style="${UI.btn2}">App icon & logo files</a>
+        </div>`)}
+      <p style="margin:0;${UI.hint}">The free-delivery amount and the discount in the announcement bar come from <a href="/admin/settings" style="color:#6E1A2C">Settings</a> and <a href="/admin/discounts" style="color:#6E1A2C">Discounts</a>.</p>`;
+    if (!canEdit) { $$('input, textarea', body).forEach((el) => { el.disabled = true; }); return; }
+    const status = $('[data-status]', body);
+    body.addEventListener('input', () => { status.textContent = 'Unsaved changes'; status.style.color = '#8A4B0F'; });
+    $('[data-save]', body).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const now = new Date().toISOString();
+      const up = CONTENT.flatMap((g) => g[2]).map(([k]) => ({ key: k, value: ($(`[name="${k}"]`, body).value || '').trim().replace(/^@/, ''), updated_at: now }));
+      btn.classList.add('dh-busy');
+      const { error } = await db.from('site_content').upsert(up);
+      btn.classList.remove('dh-busy');
+      if (error) { toast('Couldn’t save: ' + error.message); return; }
+      try { sessionStorage.removeItem('dh-content-v1'); } catch { /* ignore */ }
+      const n = up.filter((r) => r.value).length;
+      status.textContent = `Saved. ${n} of ${total} filled in.`; status.style.color = '#1E5B34';
+      toast('Content saved — the shop updates right away');
+    });
+  }
+
+  /* ======================= ADMIN: settings ======================= */
+  async function initAdminSettings() {
+    const body = adminBody();
+    if (!canDo('settings', false)) { body.innerHTML = noAccess(); return; }
+    const canEdit = canDo('settings');
+    const [{ data: store }, { data: delivery = [] }] = await Promise.all([
+      db.from('store_settings').select('*').eq('id', 1).maybeSingle(),
+      db.from('delivery_options').select('*').order('sort'),
+    ]);
+    body.innerHTML = `
+      ${canEdit ? '' : `<p style="margin:0;${UI.hint};font-size:15px">You can see these settings. Only the owner can change them.</p>`}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:24px;align-items:start">
+        ${card(`<h2 style="${UI.h2}">Free delivery</h2>
+          ${fieldHtml('free_over', 'Free standard delivery on orders over (₦)', store && store.free_delivery_over_ngn != null ? store.free_delivery_over_ngn : '', 'type="number" min="0" step="1000" inputmode="numeric" placeholder="Off"', 'Leave empty to turn it off. Applied at checkout and shown in the announcement bar.')}
+          ${canEdit ? `<button type="button" data-savefree style="${UI.btn};align-self:flex-start">Save</button>` : ''}`)}
+        ${card(`<h2 style="${UI.h2}">Delivery options</h2><p style="margin:-8px 0 0;${UI.hint}">What shoppers choose from at checkout.</p>
+          <div style="display:flex;flex-direction:column;gap:12px">${delivery.map((o) => `
+            <div data-code="${esc(o.code)}" style="display:grid;grid-template-columns:minmax(0,1fr) 130px auto;gap:10px;align-items:end;padding:12px;border-radius:14px;background:rgba(255,255,255,.7)">
+              <label style="${UI.label}">${esc(o.name)}<input name="detail" value="${esc(o.detail || '')}" maxlength="120" placeholder="e.g. 2–4 working days" style="${UI.field}"></label>
+              <label style="${UI.label}">Fee (₦)<input name="fee" type="number" min="0" step="500" value="${o.fee_ngn}" style="${UI.field}"></label>
+              <label style="display:flex;gap:8px;align-items:center;min-height:44px;font-size:14px;cursor:pointer"><input type="checkbox" name="on" ${o.active ? 'checked' : ''} style="accent-color:#6E1A2C;width:18px;height:18px">On</label>
+            </div>`).join('')}</div>
+          ${canEdit ? `<button type="button" data-savedelivery style="${UI.btn};align-self:flex-start">Save delivery options</button>` : ''}`)}
+      </div>
+      <div data-paycards style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:24px;align-items:start"></div>
+      ${card(`<h2 style="${UI.h2}">Admin app</h2><p style="margin:0;${UI.hint};font-size:15px">Install the admin on your phone for one-tap access to orders.</p><a href="/app/install?app=admin" style="${UI.btn2};align-self:flex-start">Install on your phone</a>`)}`;
+    if (!canEdit) $$('input', body).forEach((el) => { el.disabled = true; });
+    const sf = $('[data-savefree]', body);
+    if (sf) sf.addEventListener('click', async () => {
+      const n = parseInt($('[name="free_over"]', body).value, 10);
+      sf.classList.add('dh-busy');
+      const { error } = await db.from('store_settings').update({ free_delivery_over_ngn: n >= 0 ? n : null, updated_at: new Date().toISOString() }).eq('id', 1);
+      sf.classList.remove('dh-busy');
+      try { sessionStorage.removeItem('dh-content-v1'); } catch { /* ignore */ }
+      toast(error ? 'Couldn’t save: ' + error.message : n >= 0 ? `Free delivery over ${naira(n)}` : 'Free delivery turned off');
+    });
+    const sd = $('[data-savedelivery]', body);
+    if (sd) sd.addEventListener('click', async () => {
+      sd.classList.add('dh-busy');
+      const results = await Promise.all($$('[data-code]', body).map((row) => db.from('delivery_options').update({
+        detail: $('[name="detail"]', row).value.trim() || null, fee_ngn: Math.max(0, parseInt($('[name="fee"]', row).value, 10) || 0), active: $('[name="on"]', row).checked,
+      }).eq('code', row.dataset.code)));
+      sd.classList.remove('dh-busy');
+      const bad = results.find((r) => r.error);
+      toast(bad ? 'Couldn’t save: ' + bad.error.message : 'Delivery options saved');
+    });
+    const host = $('[data-paycards]', body);
+    await renderPaymentsCard(host);
+    await renderAlertsCard(host);
+  }
+
+  /* ======================= ADMIN: welcome (accept an invite) ======================= */
+  async function initAdminWelcome() {
+    const form = $('form');
+    const token = new URLSearchParams(location.search).get('t') || '';
+    if (!form) return;
+    form.removeAttribute('onsubmit');
+    const { data, error } = await db.functions.invoke('staff-admin', { body: { action: 'peek', token } });
+    const msg = await fnError(error, data);
+    if (msg) {
+      form.innerHTML = `<h1 style="margin:0;font-size:35px;font-weight:600;letter-spacing:-0.022em">Invite link expired</h1><p style="margin:0;font-size:15px;color:#6E6E73;line-height:1.5">${esc(msg)}</p><a href="/admin/login" style="${UI.btn2};align-self:flex-start">Go to staff sign in</a>`;
+      return;
+    }
+    form.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:6px"><h1 style="margin:0;font-size:35px;font-weight:600;letter-spacing:-0.022em">Welcome, ${esc(String(data.full_name || '').split(' ')[0] || 'there')}</h1>
+        <p style="margin:0;font-size:15px;color:#6E6E73;line-height:1.5">You’ve been added to the store admin as <strong style="color:#1D1D1F">${esc(data.role)}</strong>. Choose a password for <strong style="color:#1D1D1F">${esc(data.email)}</strong>.</p></div>
+      <input type="email" autocomplete="username" value="${esc(data.email)}" hidden>
+      ${fieldHtml('password', 'New password', '', 'type="password" autocomplete="new-password" minlength="10" required', 'At least 10 characters.')}
+      ${fieldHtml('password2', 'Type it again', '', 'type="password" autocomplete="new-password" minlength="10" required')}
+      <button type="submit" style="${UI.btn};min-height:50px">Set password and sign in</button>`;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pw = $('[name="password"]', form); const pw2 = $('[name="password2"]', form);
+      const btn = $('button[type=submit]', form);
+      showError(btn, '');
+      if (!pw.checkValidity()) { pw.reportValidity(); return; }
+      if (pw.value !== pw2.value) { showError(btn, 'The two passwords don’t match.'); return; }
+      btn.classList.add('dh-busy');
+      const r = await db.functions.invoke('staff-admin', { body: { action: 'accept', token, password: pw.value } });
+      const m = await fnError(r.error, r.data);
+      if (m) { btn.classList.remove('dh-busy'); showError(btn, m); return; }
+      const { error: se } = await db.auth.signInWithPassword({ email: r.data.email, password: pw.value });
+      btn.classList.remove('dh-busy');
+      if (se) { showError(btn, 'Your password is set. Please sign in.'); setTimeout(() => { location.href = '/admin/login'; }, 1500); return; }
+      location.href = '/admin';
+    });
+  }
+
   /* ======================= start ======================= */
   async function start() {
     try {
@@ -1689,6 +2785,8 @@
         try {
           if (!db) return;
           await syncing;
+          if (page === 'app-install') return initInstallPage();
+          if (page.startsWith('marketing-')) return await initMarketing();
           if (page === 'checkout') return await initCheckout();
           if (page === 'order-confirmed') return await initConfirmed();
           if (page === 'account') return await initAccountPage();
@@ -1700,15 +2798,21 @@
         } finally {
           paintWish();
           initMotion();
+          applyContent();
         }
       }
       if (!db) return;
       if (page === 'admin-login') return initAdminLogin();
+      if (page === 'admin-welcome') return initAdminWelcome();
       const user = await requireStaff();
       if (!user) return;
       initAdminChrome(user);
-      const init = { 'admin-orders': initAdminOrders, 'admin-dashboard': initAdminDashboard, 'admin-products': initAdminProducts, 'admin-customers': initAdminCustomers }[page];
-      try { if (init) await init(); } finally { document.body.classList.add('dh-auth'); initMotion(); }
+      const init = {
+        'admin-orders': initAdminOrders, 'admin-dashboard': initAdminDashboard, 'admin-products': initAdminProducts, 'admin-customers': initAdminCustomers,
+        'admin-product-edit': initAdminProductEdit, 'admin-staff': initAdminStaff, 'admin-discounts': initAdminDiscounts,
+        'admin-content': initAdminContent, 'admin-settings': initAdminSettings,
+      }[page];
+      try { if (init && !document.body.dataset.denied) await init(); } finally { document.body.classList.add('dh-auth'); initMotion(); }
     } catch (err) {
       console.error(err);
       toast('Something went wrong loading this page. Please refresh.');

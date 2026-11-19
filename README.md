@@ -24,10 +24,18 @@ type, sentence case, a white storefront and glass materials, shared in
 | `/admin/login` | Staff sign in (Supabase Auth, email + password) |
 | `/admin` | Revenue, orders, average order, new customers, daily revenue, top products, recent orders, low stock |
 | `/admin/orders` | All orders, filters, search, CSV export; change fulfilment and payment status; WhatsApp the customer |
-| `/admin/products` | Edit price and stock, publish or hide a product |
+| `/admin/products` | Quick price and stock edits, publish or hide; the name opens the full editor |
+| `/admin/product-edit` | Add or edit a product: title, description, photos (uploaded to Supabase Storage), lengths / lace / density, price per length, compare-at price, stock, SKU, badge, category, style, colour, delete |
 | `/admin/customers` | Customers built from orders |
+| `/admin/discounts` | Discount codes (percent or naira off, minimum bag, first order only, dates, use limit); feature one in the announcement bar |
+| `/admin/content` | The text behind every `[PLACEHOLDER]` in the shop: contact details, delivery and returns, product details, your story |
+| `/admin/settings` | Free-delivery threshold, delivery options and fees, CheqPay payments, order alerts |
+| `/admin/staff` | Invite staff, change roles, suspend or remove, roles table, activity log (owner only) |
+| `/admin/welcome` | Where an invited staff member sets their password |
+| `/app/install` | Install the shop (or `?app=admin`, the admin) on a phone's home screen |
+| `/marketing/instagram`, `/marketing/thank-you-card`, `/marketing/app-icon` | Make a 1080 × 1080 Instagram post from any wig, print thank-you cards, download the HL icon |
 
-The Staff, Edit product, mobile-app and marketing pages are still design mockups.
+The old phone-app mock-ups (`/app/admin-home`, `/app/admin-order`, `/app/staff-invite`, `/app/splash`, `/app/product`) now redirect to the live pages that do the same job.
 
 ## Database (Supabase project `dreamhairbyloveth`)
 
@@ -36,26 +44,42 @@ The Staff, Edit product, mobile-app and marketing pages are still design mockups
 - `orders` + `order_items`: created only by `place_order()`, which reads prices
   and delivery fees from the database and reduces stock
 - `messages`, `subscribers`: anyone can add, only staff can read
-- `staff`: who can use the admin
+- `staff`: who can use the admin, their role (`access`), status and last sign-in
+- `staff_invites`, `staff_activity`: one-time invite links (stored hashed) and the activity log
+- `discounts`, `store_settings`, `site_content`: discount codes, free delivery, editable shop text
 
 Row level security is on for every table. Shoppers can read active products
 and delivery options and place orders; only signed-in staff can read orders,
 customers, messages and subscribers.
 
-### Add a staff member
+### Staff and roles
 
-1. Supabase dashboard → Authentication → Users → **Add user** (tick *Auto confirm*).
-2. SQL editor:
-   ```sql
-   insert into public.staff (user_id, role)
-   select id, 'staff' from auth.users where email = 'their@email.com';
-   ```
+Admin → **Staff** → **Add staff**. The `staff-admin` edge function creates the
+account and a one-time invite link (valid 48 hours) that you send on WhatsApp or
+copy; it's also emailed once `RESEND_API_KEY` is set. They open it, choose their
+own password and land in the admin.
 
-### Add a product
+| Area | Owner | Manager | Sales & customer care | Inventory |
+| --- | --- | --- | --- | --- |
+| Dashboard | Full | Full | View | View |
+| Orders | Full | Full | Full | View |
+| Products & stock | Full | Full | View | Full |
+| Customers | Full | Full | Full | — |
+| Discounts | Full | Full | View | — |
+| Content | Full | Full | — | — |
+| Settings & payments | Full | View | — | — |
+| Staff | Full | — | — | — |
 
-Admin → Products lets you change price, stock and visibility. To add a new
-product, add a row to `products` in the Supabase table editor and put its photo
-in `images/`.
+The database enforces this (`role_access()` / `can()` in the row level security
+policies); the menu just hides what a role can't open. Suspended staff are
+locked out at once.
+
+### Products
+
+Admin → Products → **Add product**. Photos are resized in the browser and
+uploaded to the public `product-images` storage bucket. Leave a length's price
+blank to use the main price; `place_order()` charges the price of the length the
+shopper chose.
 
 ## Customer accounts
 
@@ -148,10 +172,11 @@ switched off when the visitor's device asks for reduced motion.
 
 ## Still to fill in
 
-Text in square brackets is a placeholder for real details, for example
-`[AMOUNT]`, `[CODE]`, `[YOUR WHATSAPP NUMBER]`, `[INSTAGRAM HANDLE]`,
-`[DELIVERY TIME]`, `[YOUR STORY …]`. Delivery fees (₦5,000 / ₦10,000 / free)
-are placeholders in `delivery_options`.
+Text in square brackets in the shop is filled in from Admin → **Content**
+(contact details, delivery, returns, product details, your story). The
+announcement bar is built from Settings (free delivery) and Discounts (the
+featured code), and hides itself when neither is set. Delivery fees
+(₦5,000 / ₦10,000 / free) are placeholders: change them in Admin → Settings.
 
 ## Run locally
 
