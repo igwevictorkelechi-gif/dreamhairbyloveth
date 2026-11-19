@@ -9,9 +9,7 @@ alter table public.products
   add column if not exists images text[] not null default '{}',
   add column if not exists length_prices jsonb not null default '{}'::jsonb,
   add column if not exists updated_at timestamptz not null default now();
-alter table public.products drop constraint if exists products_category_check;
 alter table public.products add constraint products_category_check check (category in ('Wigs', 'Bundles', 'Hair care'));
-alter table public.products drop constraint if exists products_compare_at_check;
 alter table public.products add constraint products_compare_at_check check (compare_at_ngn is null or compare_at_ngn >= 0);
 
 -- price for one length (falls back to the product price)
@@ -33,12 +31,13 @@ alter table public.staff
   add column if not exists status text not null default 'active',
   add column if not exists invited_by uuid,
   add column if not exists invited_at timestamptz,
-  add column if not exists last_seen_at timestamptz;
-alter table public.staff drop constraint if exists staff_role_check;
-update public.staff set role = 'manager' where role = 'staff';
-alter table public.staff add constraint staff_role_check check (role in ('owner', 'manager', 'sales', 'inventory'));
-alter table public.staff drop constraint if exists staff_status_check;
+  add column if not exists last_seen_at timestamptz,
+  -- the role used for permissions: owner, manager, sales or inventory
+  -- (the older role column stays owner / manager / staff for compatibility)
+  add column if not exists access text not null default 'manager';
+alter table public.staff add constraint staff_access_check check (access in ('owner', 'manager', 'sales', 'inventory'));
 alter table public.staff add constraint staff_status_check check (status in ('active', 'invited', 'suspended'));
+update public.staff set access = case role when 'owner' then 'owner' else 'manager' end where access = 'manager' and role = 'owner';
 update public.staff s set email = u.email, full_name = coalesce(s.full_name, initcap(split_part(u.email, '@', 1)))
 from auth.users u where u.id = s.user_id and s.email is null;
 
@@ -59,7 +58,7 @@ $$;
 
 create or replace function public.staff_role()
 returns text language sql stable security definer set search_path = '' as $$
-  select role from public.staff where user_id = (select auth.uid()) and status = 'active';
+  select access from public.staff where user_id = (select auth.uid()) and status = 'active';
 $$;
 
 -- what a role may do in an area: 'full', 'view' or 'none'
@@ -86,29 +85,17 @@ $$;
 create or replace function public.touch_staff()
 returns jsonb language sql volatile security definer set search_path = '' as $$
   update public.staff set last_seen_at = now() where user_id = (select auth.uid()) and status = 'active'
-  returning jsonb_build_object('role', role, 'full_name', full_name, 'email', email);
+  returning jsonb_build_object('role', access, 'full_name', full_name, 'email', email);
 $$;
 
 -- tighten writes to each area
-drop policy if exists "staff update products" on public.products;
-drop policy if exists "staff insert products" on public.products;
-drop policy if exists "staff delete products" on public.products;
-create policy "product staff insert products" on public.products for insert to authenticated with check ((select public.can('products')));
-create policy "product staff update products" on public.products for update to authenticated using ((select public.can('products'))) with check ((select public.can('products')));
-create policy "product staff delete products" on public.products for delete to authenticated using ((select public.can('products')));
+alter policy "staff insert products" on public.products with check ((select public.can('products')));
+alter policy "staff update products" on public.products using ((select public.can('products'))) with check ((select public.can('products')));
+alter policy "staff delete products" on public.products using ((select public.can('products')));
+alter policy "staff update orders" on public.orders using ((select public.can('orders'))) with check ((select public.can('orders')));
+alter policy "staff update alert settings" on public.alert_settings using ((select public.can('settings'))) with check ((select public.can('settings')));
+alter policy "staff update delivery options" on public.delivery_options using ((select public.can('settings'))) with check ((select public.can('settings')));
 
-drop policy if exists "staff update orders" on public.orders;
-create policy "order staff update orders" on public.orders for update to authenticated using ((select public.can('orders'))) with check ((select public.can('orders')));
-
-drop policy if exists "staff update alert settings" on public.alert_settings;
-create policy "settings staff update alert settings" on public.alert_settings for update to authenticated using ((select public.can('settings'))) with check ((select public.can('settings')));
-
-drop policy if exists "staff update delivery options" on public.delivery_options;
-create policy "settings staff update delivery options" on public.delivery_options for update to authenticated using ((select public.can('settings'))) with check ((select public.can('settings')));
-
-drop policy if exists "product staff upload images" on storage.objects;
-drop policy if exists "product staff change images" on storage.objects;
-drop policy if exists "product staff delete images" on storage.objects;
 create policy "product staff upload images" on storage.objects for insert to authenticated
   with check (bucket_id = 'product-images' and (select public.can('products')));
 create policy "product staff change images" on storage.objects for update to authenticated
@@ -127,7 +114,6 @@ create table if not exists public.staff_activity (
   created_at timestamptz not null default now()
 );
 alter table public.staff_activity enable row level security;
-drop policy if exists "staff read activity" on public.staff_activity;
 create policy "staff read activity" on public.staff_activity for select to authenticated using ((select public.can('staff', false)));
 create index if not exists staff_activity_created_idx on public.staff_activity (created_at desc);
 
@@ -152,7 +138,6 @@ begin
   end if;
   return new;
 end $$;
-drop trigger if exists orders_activity on public.orders;
 create trigger orders_activity after update on public.orders for each row execute function public.orders_activity();
 
 create or replace function public.products_activity()
@@ -170,13 +155,11 @@ begin
   end if;
   return new;
 end $$;
-drop trigger if exists products_activity on public.products;
 create trigger products_activity after insert or update or delete on public.products for each row execute function public.products_activity();
 
 create or replace function public.products_touch()
 returns trigger language plpgsql set search_path = '' as $$
 begin new.updated_at := now(); return new; end $$;
-drop trigger if exists products_touch on public.products;
 create trigger products_touch before update on public.products for each row execute function public.products_touch();
 
 -- ---------- discounts ----------
@@ -197,8 +180,6 @@ create table if not exists public.discounts (
   constraint discounts_percent_range check (kind <> 'percent' or value <= 90)
 );
 alter table public.discounts enable row level security;
-drop policy if exists "staff read discounts" on public.discounts;
-drop policy if exists "discount staff write discounts" on public.discounts;
 create policy "staff read discounts" on public.discounts for select to authenticated using ((select public.can('discounts', false)));
 create policy "discount staff write discounts" on public.discounts for all to authenticated
   using ((select public.can('discounts'))) with check ((select public.can('discounts')));
@@ -238,8 +219,6 @@ create table if not exists public.store_settings (
 );
 insert into public.store_settings (id) values (1) on conflict do nothing;
 alter table public.store_settings enable row level security;
-drop policy if exists "anyone reads store settings" on public.store_settings;
-drop policy if exists "settings staff update store settings" on public.store_settings;
 create policy "anyone reads store settings" on public.store_settings for select using (true);
 create policy "settings staff update store settings" on public.store_settings for update to authenticated
   using ((select public.can('settings'))) with check ((select public.can('settings')));
@@ -250,8 +229,6 @@ create table if not exists public.site_content (
   updated_at timestamptz not null default now()
 );
 alter table public.site_content enable row level security;
-drop policy if exists "anyone reads site content" on public.site_content;
-drop policy if exists "content staff write site content" on public.site_content;
 create policy "anyone reads site content" on public.site_content for select using (true);
 create policy "content staff write site content" on public.site_content for all to authenticated
   using ((select public.can('content'))) with check ((select public.can('content')));
@@ -372,8 +349,3 @@ begin
     'subtotal_ngn', v_order.subtotal_ngn, 'total_ngn', v_order.total_ngn, 'created_at', v_order.created_at, 'items', v_lines);
 end;
 $function$;
-
-revoke execute on function public.touch_staff() from anon;
-revoke execute on function public.log_activity(text, text, text) from anon, authenticated;
-grant execute on function public.check_discount(text, integer, text) to anon, authenticated;
-grant execute on function public.store_promos() to anon, authenticated;
