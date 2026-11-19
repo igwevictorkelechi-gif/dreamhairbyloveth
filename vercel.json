@@ -5,7 +5,52 @@
   "headers": [
     {
       "source": "/(images|icons)/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800" }]
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "key": "Service-Worker-Allowed",
+          "value": "/"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/app/admin-home",
+      "destination": "/admin",
+      "permanent": false
+    },
+    {
+      "source": "/app/admin-order",
+      "destination": "/admin/orders",
+      "permanent": false
+    },
+    {
+      "source": "/app/staff-invite",
+      "destination": "/admin/staff",
+      "permanent": false
+    },
+    {
+      "source": "/app/splash",
+      "destination": "/app/install",
+      "permanent": false
+    },
+    {
+      "source": "/app/product",
+      "destination": "/shop",
+      "permanent": false
     }
   ]
 }
